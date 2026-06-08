@@ -23,6 +23,12 @@ constexpr const char *kConfigPaths[] = {
 };
 constexpr size_t kMaxReleaseJsonBytes = 32768;
 constexpr const char *kStatusTitle = "OTA";
+// Bound a stalled asset download so it fails with a reason instead of hanging
+// on a half-open TLS connection that never delivers more bytes.
+constexpr uint32_t kDownloadStallTimeoutSecs = 20;
+// Marginal Wi-Fi can stall or corrupt the multi-MB asset download; retry the
+// whole download a few times before giving up.
+constexpr int kMaxDownloadAttempts = 3;
 const char *kRedirectHeaderKeys[] = {
     "Location",
 };
@@ -383,52 +389,75 @@ OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallb
   reportStatus(callback, context, kStatusTitle, "Preparing update",
                versionDetail(result.currentVersion, result.latestVersion), 28);
 
-  String resolvedAssetUrl;
-  String resolveError;
-  if (!resolveDownloadUrl(release.assetUrl, result.latestVersion, resolvedAssetUrl, resolveError,
-                          callback, context)) {
-    disconnectWiFi();
-    result.code = ResultCode::InstallFailed;
-    result.summary = "Asset failed";
-    result.detail = resolveError;
-    return result;
-  }
+  // Wi-Fi stays connected across attempts; re-resolve each time since the
+  // signed asset URL from GitHub is short-lived.
+  t_httpUpdate_return updateResult = HTTP_UPDATE_FAILED;
+  String lastError;
+  for (int attempt = 1; attempt <= kMaxDownloadAttempts; ++attempt) {
+    if (attempt > 1) {
+      reportStatus(callback, context, kStatusTitle, "Retrying download",
+                   String(attempt) + "/" + String(kMaxDownloadAttempts), 28);
+      delay(1000);
+    }
 
-  WiFiClientSecure client;
-  // Match the metadata request behavior until the update path gains certificate pinning or
-  // signature verification above the transport layer.
-  client.setInsecure();
-  client.setHandshakeTimeout(15);
+    String resolvedAssetUrl;
+    String resolveError;
+    if (!resolveDownloadUrl(release.assetUrl, result.latestVersion, resolvedAssetUrl, resolveError,
+                            callback, context)) {
+      lastError = resolveError;
+      continue;
+    }
 
-  HTTPUpdate updater;
-  updater.rebootOnUpdate(false);
-  updater.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    WiFiClientSecure client;
+    // Match the metadata request behavior until the update path gains certificate pinning or
+    // signature verification above the transport layer.
+    client.setInsecure();
+    client.setHandshakeTimeout(15);
+    // Read timeout for the body: without it, a half-open TLS connection that
+    // stops sending bytes leaves HTTPUpdate spinning on a 0-byte stream forever.
+    client.setTimeout(kDownloadStallTimeoutSecs);
 
-  int lastReportedProgress = -1;
-  updater.onProgress([this, callback, context, &result, &lastReportedProgress](int current,
-                                                                                int total) {
-    if (total <= 0) {
+    HTTPUpdate updater;
+    updater.rebootOnUpdate(false);
+    updater.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+    int lastReportedProgress = -1;
+    updater.onProgress([this, callback, context, &result, &lastReportedProgress](int current,
+                                                                                  int total) {
+      if (total <= 0) {
+        // No Content-Length from the download host: show bytes received so a live
+        // (if slow) download is visible and a true stall reads as a frozen count.
+        const int kb = current / 1024;
+        if (kb == lastReportedProgress) {
+          return;
+        }
+        lastReportedProgress = kb;
+        const String line = result.latestVersion + "  " + String(kb) + " KB";
+        reportStatus(callback, context, kStatusTitle, "Downloading update", line, -1);
+        return;
+      }
+
+      const int progress = 30 + static_cast<int>((static_cast<int64_t>(current) * 65) / total);
+      if (progress == lastReportedProgress) {
+        return;
+      }
+
+      lastReportedProgress = progress;
       reportStatus(callback, context, kStatusTitle, "Downloading update", result.latestVersion,
-                   -1);
-      return;
+                   progress);
+    });
+
+    const String version = result.currentVersion;
+    updateResult = updater.update(client, resolvedAssetUrl, version, [version](HTTPClient *http) {
+      http->setUserAgent(userAgentForVersion(version));
+      http->addHeader("Accept", "application/octet-stream");
+    });
+
+    if (updateResult == HTTP_UPDATE_OK || updateResult == HTTP_UPDATE_NO_UPDATES) {
+      break;
     }
-
-    const int progress = 30 + static_cast<int>((static_cast<int64_t>(current) * 65) / total);
-    if (progress == lastReportedProgress) {
-      return;
-    }
-
-    lastReportedProgress = progress;
-    reportStatus(callback, context, kStatusTitle, "Downloading update", result.latestVersion,
-                 progress);
-  });
-
-  const String version = result.currentVersion;
-  const t_httpUpdate_return updateResult =
-      updater.update(client, resolvedAssetUrl, version, [version](HTTPClient *http) {
-        http->setUserAgent(userAgentForVersion(version));
-        http->addHeader("Accept", "application/octet-stream");
-      });
+    lastError = updater.getLastErrorString();
+  }
 
   disconnectWiFi();
 
@@ -448,7 +477,7 @@ OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallb
     default:
       result.code = ResultCode::InstallFailed;
       result.summary = "Update failed";
-      result.detail = updater.getLastErrorString();
+      result.detail = lastError.isEmpty() ? "download failed" : lastError;
       return result;
   }
 }
