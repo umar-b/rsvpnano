@@ -9,6 +9,15 @@ class AudioManager {
   bool beep();
   bool available() const;
 
+  // Device-wide audio controls. Muting gates beep() entirely (it returns true
+  // -- "handled, silently" -- so callers don't fall back to the backlight cue).
+  // Volume is a 0-100 percentage mapped onto the ES8311 DAC volume register,
+  // written just before each beep. setVolume(0) is equivalent to mute.
+  void setMuted(bool muted);
+  bool muted() const;
+  void setVolume(uint8_t percent);  // clamps to 0-100
+  uint8_t volume() const;
+
  private:
   static constexpr uint32_t kSampleRateHz = 16000;
   static constexpr uint32_t kBeepDurationMs = 120;
@@ -32,7 +41,11 @@ class AudioManager {
   bool writeCodecRegister(uint8_t reg, uint8_t value);
   void fillBeepBuffer();
 
+  uint8_t dacVolumeRegisterValue() const;
+
   bool available_ = false;
   bool i2sInitialized_ = false;
+  bool muted_ = false;
+  uint8_t volumePercent_ = 100;
   int16_t beepBuffer_[kBeepSamples] = {};
 };

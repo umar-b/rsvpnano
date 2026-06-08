@@ -9,6 +9,10 @@
 
 #include "settings/PreferenceKeys.h"
 
+#ifndef RSVP_FIRMWARE_VERSION
+#define RSVP_FIRMWARE_VERSION "dev"
+#endif
+
 namespace {
 
 // Preference keys + NVS namespace are defined once in settings/PreferenceKeys.h
@@ -710,11 +714,16 @@ void CompanionSyncManager::stopServer() {
 
 void CompanionSyncManager::handleInfo() {
   const String mode = networkMode_ == NetworkMode::Station ? "station" : "access_point";
+  const String otaLastResult = preferences_.getString(kPrefOtaLastResult, "");
   const String body = String("{") + "\"name\":\"RSVP Nano\"," +
                       "\"mode\":\"" + mode + "\"," +
                       "\"baseUrl\":\"" + jsonEscape(baseUrl()) + "\"," +
                       "\"networkSsid\":\"" + jsonEscape(networkSsid_) + "\"," +
                       "\"pairingCode\":\"" + pairingCode_ + "\"," +
+                      "\"firmwareVersion\":\"" + jsonEscape(RSVP_FIRMWARE_VERSION) + "\"," +
+                      "\"otaAutoCheck\":" +
+                      (preferences_.getBool(kPrefOtaAuto, false) ? "true" : "false") + "," +
+                      "\"otaLastResult\":\"" + jsonEscape(otaLastResult) + "\"," +
                       "\"uploadPath\":\"/api/books\"" + "}";
   server_.send(200, "application/json", body);
 }
@@ -1228,6 +1237,18 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"phantomWords\":" +
           String(preferences_.getBool(kPrefPhantomWords, true) ? "true" : "false");
   body += ",\"fontSizeIndex\":" + String(fontSize);
+  body += ",\"idleStandbyMinutes\":" +
+          String(preferences_.getUChar(kPrefIdleStandbyMin, 0));
+  body += ",\"audioMuted\":" +
+          String(preferences_.getBool(kPrefAudioMuted, false) ? "true" : "false");
+  body += ",\"audioVolume\":" +
+          String(clampInt(preferences_.getUChar(kPrefAudioVolume, 100), 0, 100));
+  body += "}";
+  body += ",\"gestures\":{";
+  body += "\"swipeThresholdPx\":" + String(preferences_.getUShort(kPrefGestureSwipePx, 40));
+  body += ",\"tapSlopPx\":" + String(preferences_.getUShort(kPrefGestureTapPx, 26));
+  body += ",\"scrubStepPx\":" + String(preferences_.getUShort(kPrefGestureScrubPx, 22));
+  body += ",\"playHoldMs\":" + String(preferences_.getUInt(kPrefGestureHoldMs, 420));
   body += "}";
   body += ",\"typography\":{";
   body += "\"typeface\":\"";
@@ -1380,6 +1401,52 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
       return false;
     }
     preferences_.putUChar(kPrefReaderFontSize, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonInt(body, "idleStandbyMinutes", intValue)) {
+    if (intValue != 0 && intValue != 1 && intValue != 2 && intValue != 5 &&
+        intValue != 10 && intValue != 15) {
+      error = "idleStandbyMinutes must be 0, 1, 2, 5, 10, or 15";
+      return false;
+    }
+    preferences_.putUChar(kPrefIdleStandbyMin, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonBool(body, "audioMuted", boolValue)) {
+    preferences_.putBool(kPrefAudioMuted, boolValue);
+  }
+  if (readJsonInt(body, "audioVolume", intValue)) {
+    if (intValue < 0 || intValue > 100) {
+      error = "audioVolume must be between 0 and 100";
+      return false;
+    }
+    preferences_.putUChar(kPrefAudioVolume, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonInt(body, "swipeThresholdPx", intValue)) {
+    if (intValue < 12 || intValue > 120) {
+      error = "swipeThresholdPx must be between 12 and 120";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureSwipePx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "tapSlopPx", intValue)) {
+    if (intValue < 8 || intValue > 80) {
+      error = "tapSlopPx must be between 8 and 80";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureTapPx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "scrubStepPx", intValue)) {
+    if (intValue < 1 || intValue > 120) {
+      error = "scrubStepPx must be between 1 and 120";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureScrubPx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "playHoldMs", intValue)) {
+    if (intValue < 120 || intValue > 1500) {
+      error = "playHoldMs must be between 120 and 1500";
+      return false;
+    }
+    preferences_.putUInt(kPrefGestureHoldMs, static_cast<uint32_t>(intValue));
   }
   if (readJsonString(body, "typeface", stringValue)) {
     const int value = enumValue(stringValue, typefaceLabels, 3);

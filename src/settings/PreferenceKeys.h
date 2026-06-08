@@ -26,6 +26,7 @@ constexpr const char *kPrefPhantomWords = "phantom_on";
 constexpr const char *kPrefFooterMetricMode = "prog_md";
 constexpr const char *kPrefBatteryLabelMode = "bat_md";
 constexpr const char *kPrefScreensaverMode = "scrn_sv";
+constexpr const char *kPrefIdleStandbyMin = "idle_sby";
 constexpr const char *kPrefReaderBatteryVisible = "read_bat";
 constexpr const char *kPrefReaderChapterVisible = "read_ch";
 constexpr const char *kPrefReaderProgressVisible = "read_pct";
@@ -55,10 +56,21 @@ constexpr const char *kPrefAccurateTime = "time_est_a";
 constexpr const char *kPrefStatsWords = "st_words";
 constexpr const char *kPrefStatsMs = "st_ms";
 
+// Gesture sensitivity (raw px / ms; presets on-device, raw via companion).
+constexpr const char *kPrefGestureSwipePx = "gest_swp";
+constexpr const char *kPrefGestureTapPx = "gest_tap";
+constexpr const char *kPrefGestureScrubPx = "gest_scr";
+constexpr const char *kPrefGestureHoldMs = "gest_hold";
+
+// Audio.
+constexpr const char *kPrefAudioMuted = "aud_mute";
+constexpr const char *kPrefAudioVolume = "aud_vol";
+
 // Wi-Fi + OTA.
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
 constexpr const char *kPrefOtaAuto = "ota_auto";
 constexpr const char *kPrefOtaOwner = "ota_owner";
+constexpr const char *kPrefOtaLastResult = "ota_res";
 
 }  // namespace settings

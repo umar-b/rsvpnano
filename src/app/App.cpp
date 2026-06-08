@@ -141,13 +141,17 @@ constexpr size_t kSettingsHomeUpdateIndex = 5;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayHandednessIndex = 3;
-constexpr size_t kSettingsDisplayFooterIndex = 4;
-constexpr size_t kSettingsDisplayBatteryIndex = 5;
-constexpr size_t kSettingsDisplayScreensaverIndex = 6;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 7;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 8;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 9;
-constexpr size_t kSettingsDisplayLanguageIndex = 10;
+constexpr size_t kSettingsDisplayGestureIndex = 4;
+constexpr size_t kSettingsDisplayFooterIndex = 5;
+constexpr size_t kSettingsDisplayBatteryIndex = 6;
+constexpr size_t kSettingsDisplayScreensaverIndex = 7;
+constexpr size_t kSettingsDisplayIdleStandbyIndex = 8;
+constexpr size_t kSettingsDisplayMuteIndex = 9;
+constexpr size_t kSettingsDisplayVolumeIndex = 10;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 11;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
+constexpr size_t kSettingsDisplayLanguageIndex = 14;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -160,6 +164,9 @@ constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
 constexpr size_t kWifiSettingsForgetIndex = 4;
 constexpr size_t kWifiSettingsOtaOwnerIndex = 5;
+constexpr size_t kWifiSettingsFirmwareVersionIndex = 6;
+constexpr size_t kWifiSettingsCheckNowIndex = 7;
+constexpr size_t kWifiSettingsLastResultIndex = 8;
 
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
@@ -457,6 +464,12 @@ void App::begin() {
       preferences_.getBool(kPrefReaderChapterVisible, readerChapterVisibleWhilePlaying_);
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
+  idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
+  audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
+  if (audioVolumePercent_ > 100) {
+    audioVolumePercent_ = 100;
+  }
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -544,11 +557,13 @@ void App::begin() {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  loadGestureConfig();
   applyHandednessSettings(0, false);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
   applyPacingSettings();
   bootStartedMs_ = millis();
+  lastInputMs_ = bootStartedMs_;
   lastStateLogMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
   Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
@@ -567,6 +582,7 @@ void App::begin() {
 
   touchInitialized_ = touch_.begin();
   audio_.begin();
+  applyAudioSettings();
   focusTimer_.begin();
 
 #if RSVP_USB_TRANSFER_ENABLED && RSVP_USB_TRANSFER_AUTO_START
@@ -611,6 +627,11 @@ void App::begin() {
 void App::update(uint32_t nowMs) {
   button_.update(nowMs);
   powerButton_.update(nowMs);
+  if (button_.isHeld() || powerButton_.isHeld() || button_.wasPressedEvent() ||
+      powerButton_.wasPressedEvent() || button_.wasReleasedEvent() ||
+      powerButton_.wasReleasedEvent()) {
+    noteUserInput(nowMs);
+  }
   const bool standbyComboConsumed = handleStandbyCombo(nowMs);
   if (!standbyComboConsumed) {
     handleBootButton(nowMs);
@@ -639,7 +660,10 @@ void App::update(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Standby) {
-    handleTouch(nowMs);
+    handleStandbyTouchWake(nowMs);
+    if (state_ != AppState::Standby) {
+      return;
+    }
     updateStandbyScreensaver(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
       lastStateLogMs_ = nowMs;
@@ -660,6 +684,10 @@ void App::update(uint32_t nowMs) {
   updateWpmFeedback(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
+  maybeAutoStandby(nowMs);
+  if (state_ == AppState::Standby) {
+    return;
+  }
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
     renderActiveReader(nowMs);
@@ -1129,6 +1157,12 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       preferences_.getBool(kPrefReaderChapterVisible, readerChapterVisibleWhilePlaying_);
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
+  idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
+  audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
+  if (audioVolumePercent_ > 100) {
+    audioVolumePercent_ = 100;
+  }
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -1228,6 +1262,8 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   applyDisplayPreferences(nowMs, false);
   applyTypographySettings(nowMs, false);
   applyPacingSettings();
+  applyAudioSettings();
+  loadGestureConfig();
   if (rerender) {
     renderActiveReader(nowMs);
   }
@@ -1695,6 +1731,7 @@ void App::handleTouch(uint32_t nowMs) {
     return;
   }
 
+  noteUserInput(nowMs);
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
                 stateName(state_));
@@ -1752,7 +1789,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
   const uint32_t pressDurationMs = nowMs - pausedTouch_.startMs;
   const bool ended = event.phase == TouchPhase::End;
-  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY);
+  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_);
   const bool previewBrowseMode = contextViewVisible_ && !scrollModeEnabled();
 
   if (state_ == AppState::Playing) {
@@ -1783,7 +1820,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::None &&
-      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended)) {
+      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended,
+                                         gestureConfig_)) {
     resetReaderTapTracking();
     touchPlayHeld_ = true;
     pausedTouchIntent_ = TouchIntent::PlayHold;
@@ -1794,7 +1832,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   if (pausedTouchIntent_ == TouchIntent::None) {
     switch (touchgesture::classifyReaderDrag(absDeltaX, absDeltaY, pressDurationMs,
-                                             previewBrowseMode, ended)) {
+                                             previewBrowseMode, ended, gestureConfig_)) {
       case touchgesture::ReaderIntent::Scrub:
         resetReaderTapTracking();
         pausedTouchIntent_ = TouchIntent::Scrub;
@@ -1813,7 +1851,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::Scrub) {
-    applyScrubTarget(touchgesture::scrubStepsForDrag(deltaX), nowMs);
+    applyScrubTarget(touchgesture::scrubStepsForDrag(deltaX, gestureConfig_), nowMs);
     if (ended) {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
@@ -1970,24 +2008,24 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
 
   if (menuScreen_ == MenuScreen::TextEntry) {
-    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+    if (touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_)) {
       handleTextEntryTap(event.x, event.y, nowMs);
     }
     return;
   }
 
   if (menuScreen_ == MenuScreen::TypographyTuning &&
-      touchgesture::isHorizontalSwipe(absDeltaX, absDeltaY)) {
+      touchgesture::isHorizontalSwipe(absDeltaX, absDeltaY, gestureConfig_)) {
     cycleTypographyPreviewSample(deltaX < 0 ? 1 : -1);
     return;
   }
 
-  if (touchgesture::isVerticalSwipe(absDeltaX, absDeltaY)) {
+  if (touchgesture::isVerticalSwipe(absDeltaX, absDeltaY, gestureConfig_)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
     return;
   }
 
-  if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+  if (touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_)) {
     selectMenuItem(nowMs);
   }
 }
@@ -2435,6 +2473,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsDisplayHandednessIndex:
         cycleHandednessMode(nowMs);
         return;
+      case kSettingsDisplayGestureIndex:
+        cycleGestureSensitivity();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       case kSettingsDisplayFooterIndex:
         switch (footerMetricMode_) {
           case FooterMetricMode::Percentage:
@@ -2487,6 +2530,21 @@ void App::selectSettingsItem(uint32_t nowMs) {
             break;
         }
         preferences_.putUChar(kPrefScreensaverMode, static_cast<uint8_t>(screensaverMode_));
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayIdleStandbyIndex:
+        cycleIdleStandbyTimeout();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayMuteIndex:
+        toggleAudioMute();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayVolumeIndex:
+        cycleAudioVolume();
         rebuildSettingsMenuItems();
         renderSettings();
         return;
@@ -2593,8 +2651,6 @@ void App::openWifiSettings() {
 }
 
 void App::selectWifiSettingsItem(uint32_t nowMs) {
-  (void)nowMs;
-
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
       settingsSelectedIndex_ = kSettingsHomeWifiIndex;
@@ -2623,6 +2679,15 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
       openTextEntry(TextEntryPurpose::OtaOwner, "OTA Source", "GitHub owner", "",
                     preferences_.getString(kPrefOtaOwner, ""), "", false, 39,
                     MenuScreen::WifiSettings);
+      return;
+    case kWifiSettingsFirmwareVersionIndex:
+    case kWifiSettingsLastResultIndex:
+      // Display-only rows; re-render so the selection highlight settles.
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kWifiSettingsCheckNowIndex:
+      runFirmwareCheckOnly(nowMs);
       return;
     default:
       return;
@@ -3112,9 +3177,13 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::Brightness) + ": " +
                                  String(currentBrightnessPercent()) + "%");
     settingsMenuItems_.push_back("Reader hand: " + handednessLabel());
+    settingsMenuItems_.push_back("Gesture sensitivity: " + gestureSensitivityLabel());
     settingsMenuItems_.push_back("Footer label: " + footerMetricModeLabel());
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
+    settingsMenuItems_.push_back("Idle standby: " + idleStandbyLabel());
+    settingsMenuItems_.push_back("Mute audio: " + audioMuteLabel());
+    settingsMenuItems_.push_back("Volume: " + audioVolumeLabel());
     settingsMenuItems_.push_back("Reading battery: " +
                                  onOffLabel(readerBatteryVisibleWhilePlaying_));
     settingsMenuItems_.push_back("Reading chapter: " +
@@ -3141,6 +3210,9 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Auto OTA: " + String(otaAutoCheckEnabled() ? "On" : "Off"));
     settingsMenuItems_.push_back("Forget network");
     settingsMenuItems_.push_back("OTA Owner: " + otaOwnerLabel());
+    settingsMenuItems_.push_back("Firmware: " + otaUpdater_.currentVersion());
+    settingsMenuItems_.push_back("Check for updates");
+    settingsMenuItems_.push_back("Last check: " + otaLastResultLabel());
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
@@ -3400,6 +3472,54 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
     menuScreen_ = MenuScreen::Main;
     setState(AppState::Paused, nowMs);
   }
+}
+
+String App::otaLastResultLabel() {
+  // Decision 1: no guaranteed RTC, so store only the last result string (boot-
+  // relative "this session"); don't fabricate a wall-clock timestamp.
+  const String stored = preferences_.getString(kPrefOtaLastResult, "");
+  return stored.isEmpty() ? "Not this session" : stored;
+}
+
+void App::runFirmwareCheckOnly(uint32_t nowMs) {
+  if (blockNetworkActionForOtaCheck("OTA", nowMs)) {
+    return;
+  }
+
+  const OtaUpdater::Config config = preferredOtaConfig();
+  if (!otaUpdater_.isConfigured(config)) {
+    display_.renderStatus("OTA", "Wi-Fi not set", "Settings -> Wi-Fi");
+    delay(1600);
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  }
+
+  const OtaUpdater::Result result =
+      otaUpdater_.checkOnly(config, &App::handleStorageStatus, this);
+
+  Serial.printf("[ota] check-only code=%u current=%s latest=%s summary=%s\n",
+                static_cast<unsigned int>(result.code), result.currentVersion.c_str(),
+                result.latestVersion.c_str(), result.summary.c_str());
+
+  String resultLabel = result.summary;
+  if (resultLabel.isEmpty()) {
+    resultLabel = result.code == OtaUpdater::ResultCode::NoUpdate ? "Up to date" : "Check failed";
+  }
+  preferences_.putString(kPrefOtaLastResult, resultLabel);
+
+  const String line2 = result.detail.isEmpty() ? result.latestVersion : result.detail;
+  display_.renderStatus("OTA", resultLabel, line2);
+  delay(1600);
+
+  // If an update is available, offer to install it via the existing prompt path.
+  if (result.code == OtaUpdater::ResultCode::UpdateAvailable) {
+    runFirmwareUpdate(config, false, nowMs);
+    return;
+  }
+
+  rebuildSettingsMenuItems();
+  renderSettings();
 }
 
 void App::runRssFeedCheck(uint32_t nowMs) {
@@ -4249,6 +4369,7 @@ void App::enterStandby(uint32_t nowMs) {
   batteryWarningOverlayVisible_ = false;
   standbyEnteredMs_ = nowMs;
   standbyButtonsReleased_ = false;
+  standbyWakeTouchActive_ = false;
   lastStandbyFrameMs_ = 0;
   setState(AppState::Standby, nowMs);
   Serial.println("[app] standby screensaver started");
@@ -4281,6 +4402,198 @@ void App::exitStandby(uint32_t nowMs) {
   }
   setState(nextState, nowMs);
 }
+
+void App::handleStandbyTouchWake(uint32_t nowMs) {
+  if (!touchInitialized_) {
+    return;
+  }
+
+  TouchEvent ev;
+  if (!touch_.poll(ev)) {
+    return;
+  }
+
+  // Ignore any touch inside the wake-grace window so the entering button combo
+  // (or a stray contact at sleep) does not instantly wake the device. The grace
+  // gate mirrors the button wake path.
+  const bool pastGrace = nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs;
+  if (!pastGrace || button_.isHeld() || powerButton_.isHeld()) {
+    standbyWakeTouchActive_ = false;
+    return;
+  }
+
+  if (ev.phase == TouchPhase::Start) {
+    standbyWakeTouchActive_ = true;
+    standbyWakeStartX_ = ev.x;
+    standbyWakeStartY_ = ev.y;
+    return;
+  }
+
+  if (!standbyWakeTouchActive_) {
+    return;
+  }
+
+  if (ev.phase == TouchPhase::End) {
+    const int absDeltaX = abs(static_cast<int>(ev.x) - static_cast<int>(standbyWakeStartX_));
+    const int absDeltaY = abs(static_cast<int>(ev.y) - static_cast<int>(standbyWakeStartY_));
+    standbyWakeTouchActive_ = false;
+    // Decision 1: any tap (within the slop box) after the grace window wakes.
+    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+      noteUserInput(nowMs);  // reset the idle-standby timer on wake
+      Serial.println("[app] tap wake from standby");
+      exitStandby(nowMs);
+    }
+  }
+}
+
+void App::noteUserInput(uint32_t nowMs) { lastInputMs_ = nowMs; }
+
+void App::maybeAutoStandby(uint32_t nowMs) {
+  if (idleStandbyMinutes_ == 0) {
+    return;
+  }
+  // Only idle-in-Paused triggers auto-standby (decision 2: Playing means active
+  // reading; other states drive their own input/timeouts).
+  if (state_ != AppState::Paused) {
+    return;
+  }
+  const uint32_t idleLimitMs = static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL;
+  if (nowMs - lastInputMs_ >= idleLimitMs) {
+    Serial.printf("[app] idle %u min -> auto standby\n",
+                  static_cast<unsigned int>(idleStandbyMinutes_));
+    enterStandby(nowMs);
+  }
+}
+
+void App::cycleIdleStandbyTimeout() {
+  // Off -> 1 -> 2 -> 5 -> 10 -> 15 -> Off (minutes).
+  switch (idleStandbyMinutes_) {
+    case 0:
+      idleStandbyMinutes_ = 1;
+      break;
+    case 1:
+      idleStandbyMinutes_ = 2;
+      break;
+    case 2:
+      idleStandbyMinutes_ = 5;
+      break;
+    case 5:
+      idleStandbyMinutes_ = 10;
+      break;
+    case 10:
+      idleStandbyMinutes_ = 15;
+      break;
+    default:
+      idleStandbyMinutes_ = 0;
+      break;
+  }
+  preferences_.putUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  lastInputMs_ = millis();
+}
+
+String App::idleStandbyLabel() const {
+  if (idleStandbyMinutes_ == 0) {
+    return "Off";
+  }
+  return String(idleStandbyMinutes_) + " min";
+}
+
+namespace {
+
+// On-device gesture sensitivity presets (decision 1). "Medium" reproduces the
+// historical defaults exactly. Higher sensitivity = smaller thresholds / shorter
+// hold (easier to trigger); lower = larger (more deliberate).
+struct GesturePreset {
+  const char *label;
+  uint16_t swipePx;
+  uint16_t tapPx;
+  uint16_t scrubPx;
+  uint32_t holdMs;
+};
+
+constexpr GesturePreset kGesturePresets[] = {
+    {"Low", 56, 34, 30, 560},     // less sensitive
+    {"Medium", 40, 26, 22, 420},  // = baked-in defaults
+    {"High", 28, 18, 16, 300},    // more sensitive
+};
+constexpr size_t kGesturePresetCount = sizeof(kGesturePresets) / sizeof(kGesturePresets[0]);
+constexpr size_t kGesturePresetMediumIndex = 1;
+
+}  // namespace
+
+void App::loadGestureConfig() {
+  const GesturePreset &def = kGesturePresets[kGesturePresetMediumIndex];
+  touchgesture::GestureConfig cfg;
+  cfg.swipeThresholdPx = preferences_.getUShort(kPrefGestureSwipePx, def.swipePx);
+  cfg.tapSlopPx = preferences_.getUShort(kPrefGestureTapPx, def.tapPx);
+  cfg.scrubStepPx = preferences_.getUShort(kPrefGestureScrubPx, def.scrubPx);
+  cfg.playHoldMs = preferences_.getUInt(kPrefGestureHoldMs, def.holdMs);
+  gestureConfig_ = touchgesture::clampGestureConfig(cfg);
+}
+
+void App::cycleGestureSensitivity() {
+  // Find the current preset (or treat a companion-set custom config as Medium's
+  // neighbour), then advance to the next preset and persist its raw values.
+  size_t current = kGesturePresetMediumIndex;
+  for (size_t i = 0; i < kGesturePresetCount; ++i) {
+    if (gestureConfig_.swipeThresholdPx == kGesturePresets[i].swipePx &&
+        gestureConfig_.tapSlopPx == kGesturePresets[i].tapPx &&
+        gestureConfig_.scrubStepPx == kGesturePresets[i].scrubPx &&
+        gestureConfig_.playHoldMs == kGesturePresets[i].holdMs) {
+      current = i;
+      break;
+    }
+  }
+  const size_t next = (current + 1) % kGesturePresetCount;
+  const GesturePreset &preset = kGesturePresets[next];
+  preferences_.putUShort(kPrefGestureSwipePx, preset.swipePx);
+  preferences_.putUShort(kPrefGestureTapPx, preset.tapPx);
+  preferences_.putUShort(kPrefGestureScrubPx, preset.scrubPx);
+  preferences_.putUInt(kPrefGestureHoldMs, preset.holdMs);
+  loadGestureConfig();
+}
+
+String App::gestureSensitivityLabel() const {
+  for (size_t i = 0; i < kGesturePresetCount; ++i) {
+    if (gestureConfig_.swipeThresholdPx == kGesturePresets[i].swipePx &&
+        gestureConfig_.tapSlopPx == kGesturePresets[i].tapPx &&
+        gestureConfig_.scrubStepPx == kGesturePresets[i].scrubPx &&
+        gestureConfig_.playHoldMs == kGesturePresets[i].holdMs) {
+      return kGesturePresets[i].label;
+    }
+  }
+  return "Custom";  // raw values set over the companion
+}
+
+void App::applyAudioSettings() {
+  audio_.setMuted(audioMuted_);
+  audio_.setVolume(audioVolumePercent_);
+}
+
+void App::toggleAudioMute() {
+  audioMuted_ = !audioMuted_;
+  preferences_.putBool(kPrefAudioMuted, audioMuted_);
+  applyAudioSettings();
+}
+
+void App::cycleAudioVolume() {
+  // 25 -> 50 -> 75 -> 100 -> 25 (percent). Mute is the separate row for silence.
+  if (audioVolumePercent_ < 50) {
+    audioVolumePercent_ = 50;
+  } else if (audioVolumePercent_ < 75) {
+    audioVolumePercent_ = 75;
+  } else if (audioVolumePercent_ < 100) {
+    audioVolumePercent_ = 100;
+  } else {
+    audioVolumePercent_ = 25;
+  }
+  preferences_.putUChar(kPrefAudioVolume, audioVolumePercent_);
+  applyAudioSettings();
+}
+
+String App::audioMuteLabel() const { return audioMuted_ ? "On" : "Off"; }
+
+String App::audioVolumeLabel() const { return String(audioVolumePercent_) + "%"; }
 
 uint32_t App::standbyRngSeed(uint32_t nowMs) const {
   return nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2654435761UL) ^

@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "board/BoardConfig.h"
+#include "board/ImuDriver.h"
 #include "timer/Orientation.h"
 
 class FocusTimer {
@@ -64,12 +65,6 @@ class FocusTimer {
   // name so the timer's helpers and members read unchanged.
   using OrientationState = orientation::Side;
 
-  bool initImu();
-  bool readRegister(uint8_t reg, uint8_t &value);
-  bool writeRegister(uint8_t reg, uint8_t value);
-  bool readRegisters(uint8_t startReg, uint8_t *buffer, size_t len);
-  bool updateRegister(uint8_t reg, uint8_t mask, uint8_t value);
-  bool readAccelerometer(float &x, float &y, float &z);
   void updateOrientation(uint32_t nowMs);
   void resetOrientationStability();
   bool orientationInputArmed(uint32_t nowMs) const;
@@ -85,8 +80,7 @@ class FocusTimer {
   static BoardConfig::UiOrientation portraitOrientationForShortSide(
       OrientationState orientation);
 
-  bool imuAvailable_ = false;
-  float accelScale_ = 4.0f / 32768.0f;
+  ImuDriver imu_;
   orientation::Stabilizer orientationStabilizer_;
   OrientationState activeStartOrientation_ = OrientationState::Unknown;
   OrientationState lastShortSide_ = OrientationState::Unknown;

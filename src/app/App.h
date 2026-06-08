@@ -11,6 +11,7 @@
 #include "app/AppState.h"
 #include "app/Localization.h"
 #include "app/Menu.h"
+#include "app/TouchGesture.h"
 #include "audio/AudioManager.h"
 #include "board/BatteryManager.h"
 #include "display/DisplayManager.h"
@@ -236,6 +237,8 @@ class App {
   bool updateConfirmCanOpen() const;
   bool blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs);
   void runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs);
+  void runFirmwareCheckOnly(uint32_t nowMs);
+  String otaLastResultLabel();
   void runRssFeedCheck(uint32_t nowMs);
   OtaUpdater::Config preferredOtaConfig();
   void scanWifiNetworks();
@@ -298,6 +301,19 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void enterStandby(uint32_t nowMs);
   void exitStandby(uint32_t nowMs);
+  void handleStandbyTouchWake(uint32_t nowMs);
+  void noteUserInput(uint32_t nowMs);
+  void maybeAutoStandby(uint32_t nowMs);
+  void cycleIdleStandbyTimeout();
+  String idleStandbyLabel() const;
+  void loadGestureConfig();
+  void cycleGestureSensitivity();
+  String gestureSensitivityLabel() const;
+  void applyAudioSettings();
+  void toggleAudioMute();
+  void cycleAudioVolume();
+  String audioMuteLabel() const;
+  String audioVolumeLabel() const;
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   uint32_t standbyRngSeed(uint32_t nowMs) const;
@@ -421,6 +437,7 @@ class App {
   uint32_t lastScrollAnimationRenderMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
+  uint32_t lastInputMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
   uint32_t lastStandbyFrameMs_ = 0;
@@ -451,6 +468,10 @@ class App {
   size_t focusTimerGenreSelectedIndex_ = 0;
   uint8_t brightnessLevelIndex_ = 4;
   uint8_t readerFontSizeIndex_ = 0;
+  uint8_t idleStandbyMinutes_ = 0;  // 0 = off (preserves prior behaviour)
+  uint8_t audioVolumePercent_ = 100;
+  bool audioMuted_ = false;
+  touchgesture::GestureConfig gestureConfig_;
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;
   uint16_t pacingPunctuationDelayMs_ = 200;
@@ -507,6 +528,9 @@ class App {
   bool standbyComboHandled_ = false;
   bool standbyButtonsReleased_ = false;
   bool standbyScreenOffActive_ = false;
+  bool standbyWakeTouchActive_ = false;
+  uint16_t standbyWakeStartX_ = 0;
+  uint16_t standbyWakeStartY_ = 0;
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
