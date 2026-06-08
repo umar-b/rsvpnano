@@ -9,6 +9,10 @@
 
 #include "settings/PreferenceKeys.h"
 
+#ifndef RSVP_FIRMWARE_VERSION
+#define RSVP_FIRMWARE_VERSION "dev"
+#endif
+
 namespace {
 
 // Preference keys + NVS namespace are defined once in settings/PreferenceKeys.h
@@ -686,11 +690,16 @@ void CompanionSyncManager::stopServer() {
 
 void CompanionSyncManager::handleInfo() {
   const String mode = networkMode_ == NetworkMode::Station ? "station" : "access_point";
+  const String otaLastResult = preferences_.getString(kPrefOtaLastResult, "");
   const String body = String("{") + "\"name\":\"RSVP Nano\"," +
                       "\"mode\":\"" + mode + "\"," +
                       "\"baseUrl\":\"" + jsonEscape(baseUrl()) + "\"," +
                       "\"networkSsid\":\"" + jsonEscape(networkSsid_) + "\"," +
                       "\"pairingCode\":\"" + pairingCode_ + "\"," +
+                      "\"firmwareVersion\":\"" + jsonEscape(RSVP_FIRMWARE_VERSION) + "\"," +
+                      "\"otaAutoCheck\":" +
+                      (preferences_.getBool(kPrefOtaAuto, false) ? "true" : "false") + "," +
+                      "\"otaLastResult\":\"" + jsonEscape(otaLastResult) + "\"," +
                       "\"uploadPath\":\"/api/books\"" + "}";
   server_.send(200, "application/json", body);
 }

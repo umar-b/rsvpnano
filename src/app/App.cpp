@@ -159,6 +159,9 @@ constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
 constexpr size_t kWifiSettingsForgetIndex = 4;
 constexpr size_t kWifiSettingsOtaOwnerIndex = 5;
+constexpr size_t kWifiSettingsFirmwareVersionIndex = 6;
+constexpr size_t kWifiSettingsCheckNowIndex = 7;
+constexpr size_t kWifiSettingsLastResultIndex = 8;
 
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
@@ -2608,8 +2611,6 @@ void App::openWifiSettings() {
 }
 
 void App::selectWifiSettingsItem(uint32_t nowMs) {
-  (void)nowMs;
-
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
       settingsSelectedIndex_ = kSettingsHomeWifiIndex;
@@ -2638,6 +2639,15 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
       openTextEntry(TextEntryPurpose::OtaOwner, "OTA Source", "GitHub owner", "",
                     preferences_.getString(kPrefOtaOwner, ""), "", false, 39,
                     MenuScreen::WifiSettings);
+      return;
+    case kWifiSettingsFirmwareVersionIndex:
+    case kWifiSettingsLastResultIndex:
+      // Display-only rows; re-render so the selection highlight settles.
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kWifiSettingsCheckNowIndex:
+      runFirmwareCheckOnly(nowMs);
       return;
     default:
       return;
@@ -3159,6 +3169,9 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Auto OTA: " + String(otaAutoCheckEnabled() ? "On" : "Off"));
     settingsMenuItems_.push_back("Forget network");
     settingsMenuItems_.push_back("OTA Owner: " + otaOwnerLabel());
+    settingsMenuItems_.push_back("Firmware: " + otaUpdater_.currentVersion());
+    settingsMenuItems_.push_back("Check for updates");
+    settingsMenuItems_.push_back("Last check: " + otaLastResultLabel());
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
@@ -3418,6 +3431,54 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
     menuScreen_ = MenuScreen::Main;
     setState(AppState::Paused, nowMs);
   }
+}
+
+String App::otaLastResultLabel() {
+  // Decision 1: no guaranteed RTC, so store only the last result string (boot-
+  // relative "this session"); don't fabricate a wall-clock timestamp.
+  const String stored = preferences_.getString(kPrefOtaLastResult, "");
+  return stored.isEmpty() ? "Not this session" : stored;
+}
+
+void App::runFirmwareCheckOnly(uint32_t nowMs) {
+  if (blockNetworkActionForOtaCheck("OTA", nowMs)) {
+    return;
+  }
+
+  const OtaUpdater::Config config = preferredOtaConfig();
+  if (!otaUpdater_.isConfigured(config)) {
+    display_.renderStatus("OTA", "Wi-Fi not set", "Settings -> Wi-Fi");
+    delay(1600);
+    rebuildSettingsMenuItems();
+    renderSettings();
+    return;
+  }
+
+  const OtaUpdater::Result result =
+      otaUpdater_.checkOnly(config, &App::handleStorageStatus, this);
+
+  Serial.printf("[ota] check-only code=%u current=%s latest=%s summary=%s\n",
+                static_cast<unsigned int>(result.code), result.currentVersion.c_str(),
+                result.latestVersion.c_str(), result.summary.c_str());
+
+  String resultLabel = result.summary;
+  if (resultLabel.isEmpty()) {
+    resultLabel = result.code == OtaUpdater::ResultCode::NoUpdate ? "Up to date" : "Check failed";
+  }
+  preferences_.putString(kPrefOtaLastResult, resultLabel);
+
+  const String line2 = result.detail.isEmpty() ? result.latestVersion : result.detail;
+  display_.renderStatus("OTA", resultLabel, line2);
+  delay(1600);
+
+  // If an update is available, offer to install it via the existing prompt path.
+  if (result.code == OtaUpdater::ResultCode::UpdateAvailable) {
+    runFirmwareUpdate(config, false, nowMs);
+    return;
+  }
+
+  rebuildSettingsMenuItems();
+  renderSettings();
 }
 
 void App::runRssFeedCheck(uint32_t nowMs) {

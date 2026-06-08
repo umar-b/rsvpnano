@@ -235,6 +235,8 @@ class App {
   bool updateConfirmCanOpen() const;
   bool blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs);
   void runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs);
+  void runFirmwareCheckOnly(uint32_t nowMs);
+  String otaLastResultLabel();
   void runRssFeedCheck(uint32_t nowMs);
   OtaUpdater::Config preferredOtaConfig();
   void scanWifiNetworks();
