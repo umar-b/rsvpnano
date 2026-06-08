@@ -42,6 +42,7 @@ class CompanionSyncManager {
   static void handleRssFeedsStatic();
   static void handleBookDeleteStatic();
   static void handleBookFinishedStatic();
+  static void handleBookmarksStatic();
   static void handleBooksStatic();
   static void handleBookUploadStatic();
   static void handleNotFoundStatic();
@@ -57,6 +58,7 @@ class CompanionSyncManager {
   void handleRssFeeds();
   void handleBookDelete();
   void handleBookFinished();
+  void handleBookmarks();
   bool resolveRequestedBook(const String &requested, String &filenameOut, String &pathOut,
                             String &error);
   void handleBooks();

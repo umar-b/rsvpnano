@@ -624,6 +624,12 @@ void CompanionSyncManager::handleBookFinishedStatic() {
   }
 }
 
+void CompanionSyncManager::handleBookmarksStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleBookmarks();
+  }
+}
+
 void CompanionSyncManager::handleBooksStatic() {
   if (instance_ != nullptr) {
     instance_->handleBooks();
@@ -665,6 +671,9 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books", HTTP_DELETE, handleBookDeleteStatic);
   server_.on("/api/books", HTTP_POST, handleBooksStatic, handleBookUploadStatic);
   server_.on("/api/books/finished", HTTP_POST, handleBookFinishedStatic);
+  server_.on("/api/books/bookmarks", HTTP_GET, handleBookmarksStatic);
+  server_.on("/api/books/bookmarks", HTTP_POST, handleBookmarksStatic);
+  server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
   server_.on("/api/settings", HTTP_GET, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PATCH, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PUT, handleSettingsStatic);
@@ -746,7 +755,15 @@ void CompanionSyncManager::handleBooksList() {
           }
           body += ",\"finished\":";
           body += bookProgress_.isFinished(path) ? "true" : "false";
-          body += "}";
+          body += ",\"bookmarks\":[";
+          const std::vector<uint32_t> marks = bookProgress_.bookmarks(path);
+          for (size_t m = 0; m < marks.size(); ++m) {
+            if (m != 0) {
+              body += ",";
+            }
+            body += String(static_cast<uint32_t>(marks[m]));
+          }
+          body += "]}";
         }
       }
       entry.close();
@@ -956,6 +973,48 @@ void CompanionSyncManager::handleBookFinished() {
   Serial.printf("[sync] book %s marked %s\n", path.c_str(), finished ? "finished" : "unread");
   server_.send(200, "application/json",
                String("{\"ok\":true,\"finished\":") + (finished ? "true" : "false") + "}");
+}
+
+void CompanionSyncManager::handleBookmarks() {
+  String filename;
+  String path;
+  String error;
+  if (!resolveRequestedBook(server_.arg("name"), filename, path, error)) {
+    const int status = (error == "Book not found") ? 404 : 400;
+    server_.send(status, "application/json",
+                 String("{\"ok\":false,\"error\":\"") + error + "\"}");
+    return;
+  }
+
+  const HTTPMethod method = server_.method();
+  if (method == HTTP_POST || method == HTTP_DELETE) {
+    const String wordArg = server_.arg("word");
+    if (wordArg.isEmpty()) {
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing word\"}");
+      return;
+    }
+    const uint32_t wordIndex = static_cast<uint32_t>(strtoul(wordArg.c_str(), nullptr, 10));
+    if (method == HTTP_POST) {
+      bookProgress_.addBookmark(path, wordIndex);
+      Serial.printf("[sync] bookmark add word=%u %s\n", static_cast<unsigned int>(wordIndex),
+                    path.c_str());
+    } else {
+      bookProgress_.removeBookmark(path, wordIndex);
+      Serial.printf("[sync] bookmark remove word=%u %s\n", static_cast<unsigned int>(wordIndex),
+                    path.c_str());
+    }
+  }
+
+  String body = "{\"ok\":true,\"bookmarks\":[";
+  const std::vector<uint32_t> marks = bookProgress_.bookmarks(path);
+  for (size_t i = 0; i < marks.size(); ++i) {
+    if (i != 0) {
+      body += ",";
+    }
+    body += String(static_cast<uint32_t>(marks[i]));
+  }
+  body += "]}";
+  server_.send(200, "application/json", body);
 }
 
 void CompanionSyncManager::handleBookUpload() {

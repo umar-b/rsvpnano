@@ -271,6 +271,9 @@ class App {
   void openChapterPicker();
   void selectChapterPickerItem(uint32_t nowMs);
   void toggleCurrentBookFinished(uint32_t nowMs);
+  void openBookmarkPicker();
+  void selectBookmarkPickerItem(uint32_t nowMs);
+  void renderBookmarkPicker();
   void openRestartConfirm();
   void selectRestartConfirmItem(uint32_t nowMs);
   void openSdCardRepairConfirm();
@@ -425,6 +428,7 @@ class App {
   size_t wifiNetworkSelectedIndex_ = 0;
   size_t bookPickerSelectedIndex_ = 0;
   size_t chapterPickerSelectedIndex_ = 0;
+  size_t bookmarkPickerSelectedIndex_ = 0;
   size_t chapterTransitionIndex_ = static_cast<size_t>(-1);
   size_t restartConfirmSelectedIndex_ = 0;
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
@@ -446,6 +450,8 @@ class App {
   std::vector<DisplayManager::LibraryItem> bookMenuItems_;
   std::vector<size_t> bookPickerBookIndices_;
   std::vector<String> chapterMenuItems_;
+  std::vector<uint32_t> bookmarkMenuWordIndices_;
+  std::vector<String> bookmarkMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
   std::vector<uint32_t> wordBonusBlockPrefixSumMs_;

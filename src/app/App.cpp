@@ -63,6 +63,7 @@ enum MenuItem : size_t {
   MenuResume,
   MenuChapters,
   MenuMarkFinished,
+  MenuBookmarks,
   MenuBooks,
   MenuArticles,
   MenuFocusTimer,
@@ -161,6 +162,9 @@ constexpr size_t kWifiSettingsOtaOwnerIndex = 5;
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
 constexpr size_t kChapterPickerFallbackIndex = 1;
+constexpr size_t kBookmarkPickerBackIndex = 0;
+constexpr size_t kBookmarkPickerDropIndex = 1;
+constexpr size_t kBookmarkPickerFirstMarkIndex = 2;
 constexpr size_t kWifiNetworksBackIndex = 0;
 constexpr size_t kWifiNetworksFirstItemIndex = 1;
 constexpr size_t kFocusTimerGenreBackIndex = 0;
@@ -2149,6 +2153,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     selectedIndex = &chapterPickerSelectedIndex_;
     itemCount = chapterMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::BookmarkPicker) {
+    selectedIndex = &bookmarkPickerSelectedIndex_;
+    itemCount = bookmarkMenuItems_.size();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectedIndex = &restartConfirmSelectedIndex_;
     itemCount = RestartConfirmItemCount;
@@ -2272,6 +2279,10 @@ void App::selectMenuItem(uint32_t nowMs) {
     selectChapterPickerItem(nowMs);
     return;
   }
+  if (menuScreen_ == MenuScreen::BookmarkPicker) {
+    selectBookmarkPickerItem(nowMs);
+    return;
+  }
   if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectRestartConfirmItem(nowMs);
     return;
@@ -2318,6 +2329,9 @@ void App::selectMenuItem(uint32_t nowMs) {
       return;
     case MenuMarkFinished:
       toggleCurrentBookFinished(nowMs);
+      return;
+    case MenuBookmarks:
+      openBookmarkPicker();
       return;
     case MenuBooks:
       openBookPicker(false);
@@ -3703,6 +3717,81 @@ void App::selectChapterPickerItem(uint32_t nowMs) {
                 static_cast<unsigned int>(chapterMarkers_[chapterIndex].wordIndex));
 }
 
+void App::openBookmarkPicker() {
+  bookmarkMenuItems_.clear();
+  bookmarkMenuWordIndices_.clear();
+  bookmarkMenuItems_.push_back(uiText(UiText::Back));
+
+  if (!usingStorageBook_ || currentBookPath_.isEmpty()) {
+    display_.renderStatus("Bookmarks", "No book open", "");
+    delay(1200);
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+
+  // First action always drops a mark at the current word.
+  bookmarkMenuItems_.push_back("+ Drop mark here");
+
+  const std::vector<uint32_t> marks = bookProgress_.bookmarks(currentBookPath_);
+  const uint32_t wordCount = static_cast<uint32_t>(reader_.wordCount());
+  for (uint32_t wordIndex : marks) {
+    bookmarkMenuWordIndices_.push_back(wordIndex);
+    String label = "@ " + String(static_cast<unsigned int>(wordIndex + 1));
+    uint8_t percent = 0;
+    if (bookprogress::progressPercent(wordIndex, wordCount, percent)) {
+      label += " - " + String(percent) + "%";
+    }
+    bookmarkMenuItems_.push_back(label);
+  }
+
+  bookmarkPickerSelectedIndex_ = kBookmarkPickerDropIndex;
+  menuScreen_ = MenuScreen::BookmarkPicker;
+  Serial.printf("[bookmark-picker] %u marks for %s\n",
+                static_cast<unsigned int>(marks.size()), currentBookPath_.c_str());
+  renderBookmarkPicker();
+}
+
+void App::selectBookmarkPickerItem(uint32_t nowMs) {
+  if (bookmarkPickerSelectedIndex_ == kBookmarkPickerBackIndex ||
+      bookmarkMenuItems_.size() <= 1) {
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+
+  if (bookmarkPickerSelectedIndex_ == kBookmarkPickerDropIndex) {
+    const uint32_t wordIndex = static_cast<uint32_t>(reader_.currentIndex());
+    const bool added = bookProgress_.addBookmark(currentBookPath_, wordIndex);
+    Serial.printf("[bookmark-picker] drop at word=%u %s\n",
+                  static_cast<unsigned int>(wordIndex), added ? "added" : "exists");
+    display_.renderStatus("Bookmarks",
+                          added ? "Mark dropped" : "Already marked",
+                          "");
+    delay(900);
+    openBookmarkPicker();
+    return;
+  }
+
+  // Remaining rows map to saved marks (offset past Back + Drop).
+  const size_t markRow = bookmarkPickerSelectedIndex_ - kBookmarkPickerFirstMarkIndex;
+  if (markRow >= bookmarkMenuWordIndices_.size()) {
+    renderBookmarkPicker();
+    return;
+  }
+
+  const uint32_t wordIndex = bookmarkMenuWordIndices_[markRow];
+  reader_.seekTo(wordIndex);
+  menuScreen_ = MenuScreen::Main;
+  setState(AppState::Paused, nowMs);
+  saveReadingPosition(true);
+  Serial.printf("[bookmark-picker] jumped to word=%u\n", static_cast<unsigned int>(wordIndex));
+}
+
+void App::renderBookmarkPicker() {
+  display_.renderMenu(bookmarkMenuItems_, bookmarkPickerSelectedIndex_);
+}
+
 void App::openRestartConfirm() {
   restartConfirmReturnScreen_ = menuScreen_;
   restartConfirmSelectedIndex_ = RestartConfirmNo;
@@ -4405,6 +4494,8 @@ void App::renderMenu() {
     renderBookPicker();
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     renderChapterPicker();
+  } else if (menuScreen_ == MenuScreen::BookmarkPicker) {
+    renderBookmarkPicker();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     renderRestartConfirm();
   } else if (menuScreen_ == MenuScreen::SdCardRepairConfirm) {
@@ -4428,6 +4519,7 @@ void App::renderMainMenu() {
   const bool finished =
       usingStorageBook_ && !currentBookPath_.isEmpty() && bookProgress_.isFinished(currentBookPath_);
   items.push_back(finished ? "Mark unread" : "Mark finished");
+  items.push_back("Bookmarks");
   items.push_back("Books");
   items.push_back("Articles");
   items.push_back("Focus Timer");
