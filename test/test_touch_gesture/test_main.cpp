@@ -109,6 +109,75 @@ void test_previous_sentence_tap_zone() {
   TEST_ASSERT_FALSE(touchgesture::isPreviousSentenceTap(95, 60));  // at bottom edge (exclusive)
 }
 
+void test_config_defaults_match_baked_in_constants() {
+  // A default-constructed config must reproduce the historical behaviour the
+  // no-config overloads were written against.
+  touchgesture::GestureConfig def;
+  TEST_ASSERT_EQUAL_UINT16(40, def.swipeThresholdPx);
+  TEST_ASSERT_EQUAL_UINT16(26, def.tapSlopPx);
+  TEST_ASSERT_EQUAL_UINT16(22, def.scrubStepPx);
+  TEST_ASSERT_EQUAL_UINT32(420, def.playHoldMs);
+
+  TEST_ASSERT_EQUAL(touchgesture::isTap(26, 26), touchgesture::isTap(26, 26, def));
+  TEST_ASSERT_EQUAL(touchgesture::isHorizontalSwipe(40, 0),
+                    touchgesture::isHorizontalSwipe(40, 0, def));
+  TEST_ASSERT_EQUAL(touchgesture::scrubStepsForDrag(40 + 22),
+                    touchgesture::scrubStepsForDrag(40 + 22, def));
+  TEST_ASSERT_EQUAL(touchgesture::shouldEngagePlayHold(420, true, false, false),
+                    touchgesture::shouldEngagePlayHold(420, true, false, false, def));
+}
+
+void test_config_changes_thresholds() {
+  touchgesture::GestureConfig cfg;
+  cfg.tapSlopPx = 10;
+  cfg.swipeThresholdPx = 60;
+  cfg.scrubStepPx = 10;
+  cfg.playHoldMs = 700;
+
+  // Tighter tap slop: 26px drift is no longer a tap.
+  TEST_ASSERT_FALSE(touchgesture::isTap(20, 0, cfg));
+  TEST_ASSERT_TRUE(touchgesture::isTap(10, 10, cfg));
+
+  // Higher swipe threshold: 40px no longer a horizontal swipe.
+  TEST_ASSERT_FALSE(touchgesture::isHorizontalSwipe(40, 0, cfg));
+  TEST_ASSERT_TRUE(touchgesture::isHorizontalSwipe(60, 0, cfg));
+
+  // Scrub: nothing below the (raised) threshold; first step at threshold.
+  TEST_ASSERT_EQUAL_INT(0, touchgesture::scrubStepsForDrag(59, cfg));
+  TEST_ASSERT_EQUAL_INT(1, touchgesture::scrubStepsForDrag(60, cfg));
+  TEST_ASSERT_EQUAL_INT(2, touchgesture::scrubStepsForDrag(60 + 10, cfg));
+
+  // Longer play-hold.
+  TEST_ASSERT_FALSE(touchgesture::shouldEngagePlayHold(699, true, false, false, cfg));
+  TEST_ASSERT_TRUE(touchgesture::shouldEngagePlayHold(700, true, false, false, cfg));
+}
+
+void test_clamp_gesture_config() {
+  touchgesture::GestureConfig wild;
+  wild.swipeThresholdPx = 5;     // below min
+  wild.tapSlopPx = 5;            // below min
+  wild.scrubStepPx = 0;          // below min (must clamp to >=1, no div-by-zero)
+  wild.playHoldMs = 50;          // below min
+  touchgesture::GestureConfig lo = touchgesture::clampGestureConfig(wild);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT16(12, lo.swipeThresholdPx);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT16(8, lo.tapSlopPx);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT16(1, lo.scrubStepPx);
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT32(120, lo.playHoldMs);
+  // Clamped scrub step must not divide by zero.
+  TEST_ASSERT_EQUAL_INT(1, touchgesture::scrubStepsForDrag(lo.swipeThresholdPx, lo));
+
+  touchgesture::GestureConfig big;
+  big.swipeThresholdPx = 9999;
+  big.tapSlopPx = 9999;
+  big.scrubStepPx = 9999;
+  big.playHoldMs = 99999;
+  touchgesture::GestureConfig hi = touchgesture::clampGestureConfig(big);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT16(120, hi.swipeThresholdPx);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT16(80, hi.tapSlopPx);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT16(120, hi.scrubStepPx);
+  TEST_ASSERT_LESS_OR_EQUAL_UINT32(1500, hi.playHoldMs);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_is_tap_within_slop);
@@ -122,5 +191,8 @@ int main(void) {
   RUN_TEST(test_footer_metric_tap_zone);
   RUN_TEST(test_battery_badge_tap_zone);
   RUN_TEST(test_previous_sentence_tap_zone);
+  RUN_TEST(test_config_defaults_match_baked_in_constants);
+  RUN_TEST(test_config_changes_thresholds);
+  RUN_TEST(test_clamp_gesture_config);
   return UNITY_END();
 }

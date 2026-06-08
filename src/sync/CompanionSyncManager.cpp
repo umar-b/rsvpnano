@@ -1077,6 +1077,12 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"audioVolume\":" +
           String(clampInt(preferences_.getUChar(kPrefAudioVolume, 100), 0, 100));
   body += "}";
+  body += ",\"gestures\":{";
+  body += "\"swipeThresholdPx\":" + String(preferences_.getUShort(kPrefGestureSwipePx, 40));
+  body += ",\"tapSlopPx\":" + String(preferences_.getUShort(kPrefGestureTapPx, 26));
+  body += ",\"scrubStepPx\":" + String(preferences_.getUShort(kPrefGestureScrubPx, 22));
+  body += ",\"playHoldMs\":" + String(preferences_.getUInt(kPrefGestureHoldMs, 420));
+  body += "}";
   body += ",\"typography\":{";
   body += "\"typeface\":\"";
   body += enumLabel(typeface, typefaceLabels, 3);
@@ -1246,6 +1252,34 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
       return false;
     }
     preferences_.putUChar(kPrefAudioVolume, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonInt(body, "swipeThresholdPx", intValue)) {
+    if (intValue < 12 || intValue > 120) {
+      error = "swipeThresholdPx must be between 12 and 120";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureSwipePx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "tapSlopPx", intValue)) {
+    if (intValue < 8 || intValue > 80) {
+      error = "tapSlopPx must be between 8 and 80";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureTapPx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "scrubStepPx", intValue)) {
+    if (intValue < 1 || intValue > 120) {
+      error = "scrubStepPx must be between 1 and 120";
+      return false;
+    }
+    preferences_.putUShort(kPrefGestureScrubPx, static_cast<uint16_t>(intValue));
+  }
+  if (readJsonInt(body, "playHoldMs", intValue)) {
+    if (intValue < 120 || intValue > 1500) {
+      error = "playHoldMs must be between 120 and 1500";
+      return false;
+    }
+    preferences_.putUInt(kPrefGestureHoldMs, static_cast<uint32_t>(intValue));
   }
   if (readJsonString(body, "typeface", stringValue)) {
     const int value = enumValue(stringValue, typefaceLabels, 3);

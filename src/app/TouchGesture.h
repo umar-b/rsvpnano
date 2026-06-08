@@ -12,6 +12,25 @@
 // three handlers and the intent latch was tangled with the dispatch.
 namespace touchgesture {
 
+// User-tunable gesture sensitivity. NSDMI defaults reproduce the historical
+// baked-in constants exactly, so a default-constructed config (and every
+// no-config overload below) behaves identically to before this struct existed.
+// Mirrors the wordpacing::PacingConfig / clampConfig pattern: App stores the
+// values (presets on-device, raw values over the companion), clamps them, and
+// threads the config through the pure functions. Only the four curated knobs
+// are exposed; the browse permille, axis bias, and tap-zone sizes stay fixed.
+struct GestureConfig {
+  uint16_t swipeThresholdPx = 40;
+  uint16_t tapSlopPx = 26;
+  uint16_t scrubStepPx = 22;
+  uint32_t playHoldMs = 420;
+};
+
+// Clamps each field to the range the geometry honours (sane minimums so a
+// stored config can't disable a gesture entirely), so a stored config matches
+// what the handlers will actually apply.
+GestureConfig clampGestureConfig(const GestureConfig &config);
+
 // What a paused-reader drag resolves to, once it clears the thresholds.
 enum class ReaderIntent : uint8_t {
   None = 0,
@@ -24,23 +43,31 @@ enum class ReaderIntent : uint8_t {
 // the swipe threshold on its dominant axis and beats the other axis by the
 // axis bias (so near-diagonal drags do not register on either axis).
 bool isTap(int absDeltaX, int absDeltaY);
+bool isTap(int absDeltaX, int absDeltaY, const GestureConfig &config);
 bool isHorizontalSwipe(int absDeltaX, int absDeltaY);
+bool isHorizontalSwipe(int absDeltaX, int absDeltaY, const GestureConfig &config);
 bool isVerticalSwipe(int absDeltaX, int absDeltaY);
+bool isVerticalSwipe(int absDeltaX, int absDeltaY, const GestureConfig &config);
 
 // True once a still, long-enough press should start playback (press-and-hold),
 // but only outside the context-preview browse mode and before the touch ends.
 bool shouldEngagePlayHold(uint32_t pressDurationMs, bool tapLike, bool previewBrowseMode,
                           bool ended);
+bool shouldEngagePlayHold(uint32_t pressDurationMs, bool tapLike, bool previewBrowseMode,
+                          bool ended, const GestureConfig &config);
 
 // Resolves a paused-reader drag to an intent. Precedence: horizontal scrub
 // first, then a held vertical browse-scroll while the preview is up, then a
 // vertical WPM swipe otherwise. None until a threshold is cleared.
 ReaderIntent classifyReaderDrag(int absDeltaX, int absDeltaY, uint32_t pressDurationMs,
                                 bool previewBrowseMode, bool ended);
+ReaderIntent classifyReaderDrag(int absDeltaX, int absDeltaY, uint32_t pressDurationMs,
+                                bool previewBrowseMode, bool ended, const GestureConfig &config);
 
 // Words to seek for a horizontal scrub drag of deltaX pixels (signed: positive
 // drags forward). Zero below the swipe threshold; clamped per gesture.
 int scrubStepsForDrag(int deltaX);
+int scrubStepsForDrag(int deltaX, const GestureConfig &config);
 
 // Browse-scroll speed in words/second * 1000 from a touch at y on a panel of
 // the given height. Zero inside the neutral band around centre; signed by

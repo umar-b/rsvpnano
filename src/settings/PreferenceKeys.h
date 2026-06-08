@@ -50,6 +50,12 @@ constexpr const char *kPrefPacingPunctuationMs = "pace_pms";
 constexpr const char *kPrefPauseMode = "pause_md";
 constexpr const char *kPrefAccurateTime = "time_est_a";
 
+// Gesture sensitivity (raw px / ms; presets on-device, raw via companion).
+constexpr const char *kPrefGestureSwipePx = "gest_swp";
+constexpr const char *kPrefGestureTapPx = "gest_tap";
+constexpr const char *kPrefGestureScrubPx = "gest_scr";
+constexpr const char *kPrefGestureHoldMs = "gest_hold";
+
 // Audio.
 constexpr const char *kPrefAudioMuted = "aud_mute";
 constexpr const char *kPrefAudioVolume = "aud_vol";

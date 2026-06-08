@@ -11,6 +11,7 @@
 #include "app/AppState.h"
 #include "app/Localization.h"
 #include "app/Menu.h"
+#include "app/TouchGesture.h"
 #include "audio/AudioManager.h"
 #include "board/BatteryManager.h"
 #include "display/DisplayManager.h"
@@ -293,6 +294,9 @@ class App {
   void maybeAutoStandby(uint32_t nowMs);
   void cycleIdleStandbyTimeout();
   String idleStandbyLabel() const;
+  void loadGestureConfig();
+  void cycleGestureSensitivity();
+  String gestureSensitivityLabel() const;
   void applyAudioSettings();
   void toggleAudioMute();
   void cycleAudioVolume();
@@ -447,6 +451,7 @@ class App {
   uint8_t idleStandbyMinutes_ = 0;  // 0 = off (preserves prior behaviour)
   uint8_t audioVolumePercent_ = 100;
   bool audioMuted_ = false;
+  touchgesture::GestureConfig gestureConfig_;
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;
   uint16_t pacingPunctuationDelayMs_ = 200;

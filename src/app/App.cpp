@@ -137,16 +137,17 @@ constexpr size_t kSettingsHomeUpdateIndex = 5;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayHandednessIndex = 3;
-constexpr size_t kSettingsDisplayFooterIndex = 4;
-constexpr size_t kSettingsDisplayBatteryIndex = 5;
-constexpr size_t kSettingsDisplayScreensaverIndex = 6;
-constexpr size_t kSettingsDisplayIdleStandbyIndex = 7;
-constexpr size_t kSettingsDisplayMuteIndex = 8;
-constexpr size_t kSettingsDisplayVolumeIndex = 9;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 10;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 11;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 12;
-constexpr size_t kSettingsDisplayLanguageIndex = 13;
+constexpr size_t kSettingsDisplayGestureIndex = 4;
+constexpr size_t kSettingsDisplayFooterIndex = 5;
+constexpr size_t kSettingsDisplayBatteryIndex = 6;
+constexpr size_t kSettingsDisplayScreensaverIndex = 7;
+constexpr size_t kSettingsDisplayIdleStandbyIndex = 8;
+constexpr size_t kSettingsDisplayMuteIndex = 9;
+constexpr size_t kSettingsDisplayVolumeIndex = 10;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 11;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
+constexpr size_t kSettingsDisplayLanguageIndex = 14;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -549,6 +550,7 @@ void App::begin() {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  loadGestureConfig();
   applyHandednessSettings(0, false);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
@@ -1246,6 +1248,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   applyTypographySettings(nowMs, false);
   applyPacingSettings();
   applyAudioSettings();
+  loadGestureConfig();
   if (rerender) {
     renderActiveReader(nowMs);
   }
@@ -1771,7 +1774,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
   const uint32_t pressDurationMs = nowMs - pausedTouch_.startMs;
   const bool ended = event.phase == TouchPhase::End;
-  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY);
+  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_);
   const bool previewBrowseMode = contextViewVisible_ && !scrollModeEnabled();
 
   if (state_ == AppState::Playing) {
@@ -1802,7 +1805,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::None &&
-      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended)) {
+      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended,
+                                         gestureConfig_)) {
     resetReaderTapTracking();
     touchPlayHeld_ = true;
     pausedTouchIntent_ = TouchIntent::PlayHold;
@@ -1813,7 +1817,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   if (pausedTouchIntent_ == TouchIntent::None) {
     switch (touchgesture::classifyReaderDrag(absDeltaX, absDeltaY, pressDurationMs,
-                                             previewBrowseMode, ended)) {
+                                             previewBrowseMode, ended, gestureConfig_)) {
       case touchgesture::ReaderIntent::Scrub:
         resetReaderTapTracking();
         pausedTouchIntent_ = TouchIntent::Scrub;
@@ -1832,7 +1836,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::Scrub) {
-    applyScrubTarget(touchgesture::scrubStepsForDrag(deltaX), nowMs);
+    applyScrubTarget(touchgesture::scrubStepsForDrag(deltaX, gestureConfig_), nowMs);
     if (ended) {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
@@ -1989,24 +1993,24 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
 
   if (menuScreen_ == MenuScreen::TextEntry) {
-    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+    if (touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_)) {
       handleTextEntryTap(event.x, event.y, nowMs);
     }
     return;
   }
 
   if (menuScreen_ == MenuScreen::TypographyTuning &&
-      touchgesture::isHorizontalSwipe(absDeltaX, absDeltaY)) {
+      touchgesture::isHorizontalSwipe(absDeltaX, absDeltaY, gestureConfig_)) {
     cycleTypographyPreviewSample(deltaX < 0 ? 1 : -1);
     return;
   }
 
-  if (touchgesture::isVerticalSwipe(absDeltaX, absDeltaY)) {
+  if (touchgesture::isVerticalSwipe(absDeltaX, absDeltaY, gestureConfig_)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
     return;
   }
 
-  if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+  if (touchgesture::isTap(absDeltaX, absDeltaY, gestureConfig_)) {
     selectMenuItem(nowMs);
   }
 }
@@ -2437,6 +2441,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
         return;
       case kSettingsDisplayHandednessIndex:
         cycleHandednessMode(nowMs);
+        return;
+      case kSettingsDisplayGestureIndex:
+        cycleGestureSensitivity();
+        rebuildSettingsMenuItems();
+        renderSettings();
         return;
       case kSettingsDisplayFooterIndex:
         switch (footerMetricMode_) {
@@ -3137,6 +3146,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::Brightness) + ": " +
                                  String(currentBrightnessPercent()) + "%");
     settingsMenuItems_.push_back("Reader hand: " + handednessLabel());
+    settingsMenuItems_.push_back("Gesture sensitivity: " + gestureSensitivityLabel());
     settingsMenuItems_.push_back("Footer label: " + footerMetricModeLabel());
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
@@ -4194,6 +4204,73 @@ String App::idleStandbyLabel() const {
     return "Off";
   }
   return String(idleStandbyMinutes_) + " min";
+}
+
+namespace {
+
+// On-device gesture sensitivity presets (decision 1). "Medium" reproduces the
+// historical defaults exactly. Higher sensitivity = smaller thresholds / shorter
+// hold (easier to trigger); lower = larger (more deliberate).
+struct GesturePreset {
+  const char *label;
+  uint16_t swipePx;
+  uint16_t tapPx;
+  uint16_t scrubPx;
+  uint32_t holdMs;
+};
+
+constexpr GesturePreset kGesturePresets[] = {
+    {"Low", 56, 34, 30, 560},     // less sensitive
+    {"Medium", 40, 26, 22, 420},  // = baked-in defaults
+    {"High", 28, 18, 16, 300},    // more sensitive
+};
+constexpr size_t kGesturePresetCount = sizeof(kGesturePresets) / sizeof(kGesturePresets[0]);
+constexpr size_t kGesturePresetMediumIndex = 1;
+
+}  // namespace
+
+void App::loadGestureConfig() {
+  const GesturePreset &def = kGesturePresets[kGesturePresetMediumIndex];
+  touchgesture::GestureConfig cfg;
+  cfg.swipeThresholdPx = preferences_.getUShort(kPrefGestureSwipePx, def.swipePx);
+  cfg.tapSlopPx = preferences_.getUShort(kPrefGestureTapPx, def.tapPx);
+  cfg.scrubStepPx = preferences_.getUShort(kPrefGestureScrubPx, def.scrubPx);
+  cfg.playHoldMs = preferences_.getUInt(kPrefGestureHoldMs, def.holdMs);
+  gestureConfig_ = touchgesture::clampGestureConfig(cfg);
+}
+
+void App::cycleGestureSensitivity() {
+  // Find the current preset (or treat a companion-set custom config as Medium's
+  // neighbour), then advance to the next preset and persist its raw values.
+  size_t current = kGesturePresetMediumIndex;
+  for (size_t i = 0; i < kGesturePresetCount; ++i) {
+    if (gestureConfig_.swipeThresholdPx == kGesturePresets[i].swipePx &&
+        gestureConfig_.tapSlopPx == kGesturePresets[i].tapPx &&
+        gestureConfig_.scrubStepPx == kGesturePresets[i].scrubPx &&
+        gestureConfig_.playHoldMs == kGesturePresets[i].holdMs) {
+      current = i;
+      break;
+    }
+  }
+  const size_t next = (current + 1) % kGesturePresetCount;
+  const GesturePreset &preset = kGesturePresets[next];
+  preferences_.putUShort(kPrefGestureSwipePx, preset.swipePx);
+  preferences_.putUShort(kPrefGestureTapPx, preset.tapPx);
+  preferences_.putUShort(kPrefGestureScrubPx, preset.scrubPx);
+  preferences_.putUInt(kPrefGestureHoldMs, preset.holdMs);
+  loadGestureConfig();
+}
+
+String App::gestureSensitivityLabel() const {
+  for (size_t i = 0; i < kGesturePresetCount; ++i) {
+    if (gestureConfig_.swipeThresholdPx == kGesturePresets[i].swipePx &&
+        gestureConfig_.tapSlopPx == kGesturePresets[i].tapPx &&
+        gestureConfig_.scrubStepPx == kGesturePresets[i].scrubPx &&
+        gestureConfig_.playHoldMs == kGesturePresets[i].holdMs) {
+      return kGesturePresets[i].label;
+    }
+  }
+  return "Custom";  // raw values set over the companion
 }
 
 void App::applyAudioSettings() {
