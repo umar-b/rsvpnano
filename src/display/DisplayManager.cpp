@@ -14,6 +14,7 @@
 #include "display/EmbeddedOpenDyslexicFont70.h"
 #include "display/EmbeddedSerifFont.h"
 #include "display/EmbeddedSerifFont70.h"
+#include "display/ReadingLayout.h"
 #include "display/axs15231b.h"
 #include "text/LatinText.h"
 
@@ -730,117 +731,35 @@ ReaderTextStyle readerTextStyle(uint8_t fontSizeLevel) {
   return kStyles[fontSizeLevel];
 }
 
-int orpOrdinalForLength(int length) {
-  if (length <= 1) {
-    return 0;
-  }
-  if (length <= 5) {
-    return 1;
-  }
-  if (length <= 9) {
-    return 2;
-  }
-  if (length <= 13) {
-    return 3;
-  }
-  return 4;
-}
+// ORP letter selection lives in the pure readinglayout module (host-tested);
+// these forwarders keep the existing call sites unchanged.
+int orpOrdinalForLength(int length) { return readinglayout::orpOrdinal(length); }
 
-int findFocusLetterIndex(const String &word) {
-  int wordCharacterCount = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isWordCharacter(word[i])) {
-      ++wordCharacterCount;
-    }
-  }
-
-  if (wordCharacterCount == 0) {
-    return word.length() > 0 ? 0 : -1;
-  }
-
-  const int targetOrdinal = std::min(orpOrdinalForLength(wordCharacterCount), wordCharacterCount - 1);
-  int currentOrdinal = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (!isWordCharacter(word[i])) {
-      continue;
-    }
-    if (currentOrdinal == targetOrdinal) {
-      return static_cast<int>(i);
-    }
-    ++currentOrdinal;
-  }
-
-  return 0;
-}
+int findFocusLetterIndex(const String &word) { return readinglayout::focusLetterIndex(word); }
 
 int rsvpStartX(const String &word, int focusIndex, int virtualWidth, int divisor = 1,
                bool clampToMargins = true) {
   const TextLayoutMetrics layout = serifWordLayout(word, focusIndex, divisor);
-  const int wordWidth = textLayoutWidth(layout);
-  if (focusIndex < 0) {
-    return ((virtualWidth - wordWidth) / 2) - layout.minX;
-  }
-
-  const int anchorX = (virtualWidth * currentAnchorPercent()) / 100;
-  const int x = anchorX - layout.focusCenterX;
-  if (!clampToMargins) {
-    return x;
-  }
-  const int minX = kRsvpSideMargin - layout.minX;
-  const int maxX = virtualWidth - kRsvpSideMargin - layout.maxX;
-
-  if (maxX < minX) {
-    return x;
-  }
-
-  return std::max(minX, std::min(maxX, x));
+  return readinglayout::startX({layout.minX, layout.maxX, layout.focusCenterX, layout.hasPixels},
+                               virtualWidth, focusIndex, currentAnchorPercent(), kRsvpSideMargin,
+                               clampToMargins);
 }
 
 int rsvpStartXScaledPercent(const String &word, int focusIndex, int virtualWidth,
                             uint8_t scalePercent, bool clampToMargins = true) {
   const TextLayoutMetrics layout = serifWordLayoutScaledPercent(word, focusIndex, scalePercent);
-  const int wordWidth = textLayoutWidth(layout);
-  if (focusIndex < 0) {
-    return ((virtualWidth - wordWidth) / 2) - layout.minX;
-  }
-
-  const int anchorX = (virtualWidth * currentAnchorPercent()) / 100;
-  const int x = anchorX - layout.focusCenterX;
-  if (!clampToMargins) {
-    return x;
-  }
-  const int minX = kRsvpSideMargin - layout.minX;
-  const int maxX = virtualWidth - kRsvpSideMargin - layout.maxX;
-
-  if (maxX < minX) {
-    return x;
-  }
-
-  return std::max(minX, std::min(maxX, x));
+  return readinglayout::startX({layout.minX, layout.maxX, layout.focusCenterX, layout.hasPixels},
+                               virtualWidth, focusIndex, currentAnchorPercent(), kRsvpSideMargin,
+                               clampToMargins);
 }
 
 int serif70WordWidth(const String &word) { return textLayoutWidth(serif70WordLayout(word, -1)); }
 
 int rsvpStartX70(const String &word, int focusIndex, int virtualWidth, bool clampToMargins = true) {
   const TextLayoutMetrics layout = serif70WordLayout(word, focusIndex);
-  const int wordWidth = textLayoutWidth(layout);
-  if (focusIndex < 0) {
-    return ((virtualWidth - wordWidth) / 2) - layout.minX;
-  }
-
-  const int anchorX = (virtualWidth * currentAnchorPercent()) / 100;
-  const int x = anchorX - layout.focusCenterX;
-  if (!clampToMargins) {
-    return x;
-  }
-
-  const int minX = kRsvpSideMargin - layout.minX;
-  const int maxX = virtualWidth - kRsvpSideMargin - layout.maxX;
-  if (maxX < minX) {
-    return x;
-  }
-
-  return std::max(minX, std::min(maxX, x));
+  return readinglayout::startX({layout.minX, layout.maxX, layout.focusCenterX, layout.hasPixels},
+                               virtualWidth, focusIndex, currentAnchorPercent(), kRsvpSideMargin,
+                               clampToMargins);
 }
 
 }  // namespace
