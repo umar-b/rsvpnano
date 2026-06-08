@@ -4,6 +4,7 @@
 
 #include <esp_sleep.h>
 #include <esp_log.h>
+#include <SD_MMC.h>
 #include <WiFi.h>
 #include <algorithm>
 #include <climits>
@@ -64,6 +65,7 @@ enum MenuItem : size_t {
   MenuChapters,
   MenuMarkFinished,
   MenuBookmarks,
+  MenuStats,
   MenuBooks,
   MenuArticles,
   MenuFocusTimer,
@@ -576,6 +578,7 @@ void App::begin() {
 
   display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
   storageReady_ = storage_.begin();
+  loadReadingStats();
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
 
@@ -714,6 +717,13 @@ void App::setState(AppState nextState, uint32_t nowMs) {
   const AppState previousState = state_;
   if (previousState == AppState::Menu && nextState != AppState::Menu) {
     flushPendingTimeEstimateRebuild();
+  }
+
+  // Reading-stats session boundaries: count only words advanced while Playing.
+  if (previousState == AppState::Playing && nextState != AppState::Playing) {
+    endStatsSession(nowMs);
+  } else if (previousState != AppState::Playing && nextState == AppState::Playing) {
+    beginStatsSession(nowMs);
   }
 
   if (nextState != AppState::Paused) {
@@ -2333,6 +2343,9 @@ void App::selectMenuItem(uint32_t nowMs) {
     case MenuBookmarks:
       openBookmarkPicker();
       return;
+    case MenuStats:
+      openStatsScreen();
+      return;
     case MenuBooks:
       openBookPicker(false);
       return;
@@ -3792,6 +3805,172 @@ void App::renderBookmarkPicker() {
   display_.renderMenu(bookmarkMenuItems_, bookmarkPickerSelectedIndex_);
 }
 
+namespace {
+constexpr const char *kStatsDir = "/rsvp/.stats";
+constexpr const char *kStatsFile = "/rsvp/.stats/stats.json";
+
+// Extract an unsigned integer that follows "\"key\":" in a small JSON blob.
+// Our own file, so a tolerant manual scan beats pulling in a JSON parser.
+uint64_t jsonUint(const String &json, const char *key) {
+  String needle = String("\"") + key + "\":";
+  const int at = json.indexOf(needle);
+  if (at < 0) {
+    return 0;
+  }
+  int i = at + static_cast<int>(needle.length());
+  while (i < static_cast<int>(json.length()) && (json[i] == ' ' || json[i] == '\t')) {
+    ++i;
+  }
+  uint64_t value = 0;
+  while (i < static_cast<int>(json.length()) && json[i] >= '0' && json[i] <= '9') {
+    value = value * 10ULL + static_cast<uint64_t>(json[i] - '0');
+    ++i;
+  }
+  return value;
+}
+}  // namespace
+
+void App::loadReadingStats() {
+  // Each power-on is a fresh "day" bucket: with no RTC/NTP on this device we
+  // cannot tell calendar days apart, so we bucket per session. (The pure module
+  // takes a day key, so a real date key can replace this later untouched.)
+  statsSessionDayKey_ = static_cast<uint32_t>(bootStartedMs_ ^ 0x9E3779B9UL);
+  if (statsSessionDayKey_ == 0) {
+    statsSessionDayKey_ = 1;
+  }
+
+  stats::Snapshot snapshot;
+  bool loaded = false;
+  if (storageReady_) {
+    File file = SD_MMC.open(kStatsFile, FILE_READ);
+    if (file && !file.isDirectory()) {
+      String json;
+      json.reserve(static_cast<unsigned int>(file.size()) + 1);
+      while (file.available()) {
+        json += static_cast<char>(file.read());
+      }
+      file.close();
+      snapshot.totalWords = jsonUint(json, "totalWords");
+      snapshot.totalMs = jsonUint(json, "totalMs");
+      snapshot.dayWords = jsonUint(json, "dayWords");
+      snapshot.dayMs = jsonUint(json, "dayMs");
+      snapshot.dayKey = static_cast<uint32_t>(jsonUint(json, "dayKey"));
+      loaded = snapshot.totalWords > 0 || snapshot.totalMs > 0;
+    } else if (file) {
+      file.close();
+    }
+  }
+
+  if (!loaded) {
+    // Fall back to the NVS mirror so the screen shows something pre-card-read.
+    snapshot.totalWords = preferences_.getULong64(kPrefStatsWords, 0);
+    snapshot.totalMs = preferences_.getULong64(kPrefStatsMs, 0);
+  }
+
+  readingStats_ = stats::ReadingStats(snapshot);
+  Serial.printf("[stats] loaded words=%lu ms=%lu (sd=%u)\n",
+                static_cast<unsigned long>(snapshot.totalWords),
+                static_cast<unsigned long>(snapshot.totalMs), loaded ? 1 : 0);
+}
+
+void App::flushReadingStats() {
+  const stats::Snapshot &snapshot = readingStats_.snapshot();
+
+  // Mirror the all-time totals to NVS for instant boot display.
+  preferences_.putULong64(kPrefStatsWords, snapshot.totalWords);
+  preferences_.putULong64(kPrefStatsMs, snapshot.totalMs);
+
+  if (!storageReady_) {
+    return;
+  }
+
+  SD_MMC.mkdir("/rsvp");
+  SD_MMC.mkdir(kStatsDir);
+  const String tmpPath = String(kStatsFile) + ".tmp";
+  SD_MMC.remove(tmpPath);
+  File file = SD_MMC.open(tmpPath, FILE_WRITE);
+  if (!file) {
+    Serial.printf("[stats] could not write %s\n", tmpPath.c_str());
+    return;
+  }
+  file.print("{\"totalWords\":");
+  file.print(static_cast<unsigned long>(snapshot.totalWords));
+  file.print(",\"totalMs\":");
+  file.print(static_cast<unsigned long>(snapshot.totalMs));
+  file.print(",\"dayKey\":");
+  file.print(static_cast<unsigned long>(snapshot.dayKey));
+  file.print(",\"dayWords\":");
+  file.print(static_cast<unsigned long>(snapshot.dayWords));
+  file.print(",\"dayMs\":");
+  file.print(static_cast<unsigned long>(snapshot.dayMs));
+  file.println("}");
+  file.close();
+
+  SD_MMC.remove(kStatsFile);
+  if (!SD_MMC.rename(tmpPath, kStatsFile)) {
+    Serial.println("[stats] rename of stats file failed");
+  }
+}
+
+void App::beginStatsSession(uint32_t nowMs) {
+  if (!usingStorageBook_) {
+    statsPlayStartWordIndex_ = static_cast<size_t>(-1);
+    return;
+  }
+  statsPlayStartMs_ = nowMs;
+  statsPlayStartWordIndex_ = reader_.currentIndex();
+}
+
+void App::endStatsSession(uint32_t nowMs) {
+  if (statsPlayStartWordIndex_ == static_cast<size_t>(-1)) {
+    return;
+  }
+
+  const size_t endIndex = reader_.currentIndex();
+  // Decrement-safe: scrub-back during Playing must never subtract from totals.
+  const size_t words =
+      endIndex > statsPlayStartWordIndex_ ? endIndex - statsPlayStartWordIndex_ : 0;
+  const uint32_t elapsedMs = nowMs >= statsPlayStartMs_ ? nowMs - statsPlayStartMs_ : 0;
+  statsPlayStartWordIndex_ = static_cast<size_t>(-1);
+
+  if (words == 0 && elapsedMs == 0) {
+    return;
+  }
+
+  readingStats_.recordSession(statsSessionDayKey_, static_cast<uint32_t>(words), elapsedMs);
+  flushReadingStats();
+  Serial.printf("[stats] session words=%u ms=%u total=%lu\n", static_cast<unsigned int>(words),
+                static_cast<unsigned int>(elapsedMs),
+                static_cast<unsigned long>(readingStats_.snapshot().totalWords));
+}
+
+size_t App::countFinishedBooks() {
+  size_t finished = 0;
+  for (size_t i = 0; i < storage_.bookCount(); ++i) {
+    if (bookProgress_.isFinished(storage_.bookPath(i))) {
+      ++finished;
+    }
+  }
+  return finished;
+}
+
+void App::openStatsScreen() {
+  const stats::Snapshot &snapshot = readingStats_.snapshot();
+  const unsigned long minutes = static_cast<unsigned long>(snapshot.totalMs / 60000ULL);
+  const unsigned long avgWpm = static_cast<unsigned long>(readingStats_.averageWpm());
+  const size_t finished = countFinishedBooks();
+
+  const String line1 = String(static_cast<unsigned long>(snapshot.totalWords)) + " words  " +
+                       String(minutes) + " min";
+  const String line2 = String(avgWpm) + " wpm avg  " + String(static_cast<unsigned int>(finished)) +
+                       " finished";
+  display_.renderStatus("Reading stats", line1, line2);
+  // No RTC on this device, so totals are per-session-bucketed actuals, not
+  // calendar days. Hold the screen, then return to the menu.
+  delay(2500);
+  renderMainMenu();
+}
+
 void App::openRestartConfirm() {
   restartConfirmReturnScreen_ = menuScreen_;
   restartConfirmSelectedIndex_ = RestartConfirmNo;
@@ -4520,6 +4699,7 @@ void App::renderMainMenu() {
       usingStorageBook_ && !currentBookPath_.isEmpty() && bookProgress_.isFinished(currentBookPath_);
   items.push_back(finished ? "Mark unread" : "Mark finished");
   items.push_back("Bookmarks");
+  items.push_back("Reading stats");
   items.push_back("Books");
   items.push_back("Articles");
   items.push_back("Focus Timer");

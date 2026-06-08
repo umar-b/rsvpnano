@@ -630,6 +630,12 @@ void CompanionSyncManager::handleBookmarksStatic() {
   }
 }
 
+void CompanionSyncManager::handleStatsStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleStats();
+  }
+}
+
 void CompanionSyncManager::handleBooksStatic() {
   if (instance_ != nullptr) {
     instance_->handleBooks();
@@ -674,6 +680,7 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books/bookmarks", HTTP_GET, handleBookmarksStatic);
   server_.on("/api/books/bookmarks", HTTP_POST, handleBookmarksStatic);
   server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
+  server_.on("/api/stats", HTTP_GET, handleStatsStatic);
   server_.on("/api/settings", HTTP_GET, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PATCH, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PUT, handleSettingsStatic);
@@ -1014,6 +1021,52 @@ void CompanionSyncManager::handleBookmarks() {
     body += String(static_cast<uint32_t>(marks[i]));
   }
   body += "]}";
+  server_.send(200, "application/json", body);
+}
+
+void CompanionSyncManager::handleStats() {
+  // Read-only view of the all-time totals mirrored into NVS by the device's
+  // stats persistence (the authoritative store is an SD JSON file). With no RTC
+  // on this device, totals are session-bucketed actuals, not calendar days.
+  const uint64_t totalWords = preferences_.getULong64(kPrefStatsWords, 0);
+  const uint64_t totalMs = preferences_.getULong64(kPrefStatsMs, 0);
+  const uint32_t avgWpm =
+      totalMs >= 1000 ? static_cast<uint32_t>((totalWords * 60000ULL) / totalMs) : 0;
+
+  size_t finished = 0;
+  const auto countFinished = [&](const char *directoryPath) {
+    File dir = SD_MMC.open(directoryPath);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) {
+        dir.close();
+      }
+      return;
+    }
+    File entry = dir.openNextFile();
+    while (entry) {
+      if (!entry.isDirectory()) {
+        const String name = displayNameForPath(String(entry.name()));
+        const String path = String(directoryPath) + "/" + name;
+        String lowered = name;
+        lowered.toLowerCase();
+        if (isSupportedBookName(lowered) && bookProgress_.isFinished(path)) {
+          ++finished;
+        }
+      }
+      entry.close();
+      entry = dir.openNextFile();
+    }
+    dir.close();
+  };
+  countFinished(kBooksPath);
+  countFinished(kBookFilesPath);
+  countFinished(kArticleFilesPath);
+
+  String body = "{\"totalWords\":" + String(static_cast<uint32_t>(totalWords)) +
+                ",\"totalMs\":" + String(static_cast<uint32_t>(totalMs)) +
+                ",\"averageWpm\":" + String(avgWpm) +
+                ",\"booksFinished\":" + String(static_cast<uint32_t>(finished)) +
+                ",\"clock\":\"session\"}";
   server_.send(200, "application/json", body);
 }
 

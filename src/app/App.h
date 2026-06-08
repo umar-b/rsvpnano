@@ -19,6 +19,7 @@
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
+#include "stats/ReadingStats.h"
 #include "storage/BookProgress.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
@@ -274,6 +275,13 @@ class App {
   void openBookmarkPicker();
   void selectBookmarkPickerItem(uint32_t nowMs);
   void renderBookmarkPicker();
+  // Reading statistics: persistence shim, Playing-session record hooks, screen.
+  void loadReadingStats();
+  void flushReadingStats();
+  void beginStatsSession(uint32_t nowMs);
+  void endStatsSession(uint32_t nowMs);
+  size_t countFinishedBooks();
+  void openStatsScreen();
   void openRestartConfirm();
   void selectRestartConfirmItem(uint32_t nowMs);
   void openSdCardRepairConfirm();
@@ -400,6 +408,7 @@ class App {
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
+  stats::ReadingStats readingStats_;
   battery::Monitor batteryMonitor_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -430,6 +439,12 @@ class App {
   size_t chapterPickerSelectedIndex_ = 0;
   size_t bookmarkPickerSelectedIndex_ = 0;
   size_t chapterTransitionIndex_ = static_cast<size_t>(-1);
+  // Live Playing-session tracking for reading stats. Captured when entering
+  // Playing, folded into readingStats_ when leaving it. -1 word index = no
+  // active session.
+  uint32_t statsPlayStartMs_ = 0;
+  size_t statsPlayStartWordIndex_ = static_cast<size_t>(-1);
+  uint32_t statsSessionDayKey_ = 0;
   size_t restartConfirmSelectedIndex_ = 0;
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
   size_t updateConfirmSelectedIndex_ = 0;

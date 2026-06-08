@@ -49,6 +49,12 @@ constexpr const char *kPrefPacingPunctuationMs = "pace_pms";
 constexpr const char *kPrefPauseMode = "pause_md";
 constexpr const char *kPrefAccurateTime = "time_est_a";
 
+// Reading statistics. The authoritative store is an SD JSON file (see
+// App stats persistence); these mirror the all-time totals so the stats screen
+// can show something instantly on boot before the card is read. Keys <= 15 chars.
+constexpr const char *kPrefStatsWords = "st_words";
+constexpr const char *kPrefStatsMs = "st_ms";
+
 // Wi-Fi + OTA.
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
