@@ -82,6 +82,12 @@ bool AudioManager::begin() {
 }
 
 bool AudioManager::beep() {
+  if (muted_ || volumePercent_ == 0) {
+    // Audio is silenced by the user. Report "handled" so callers don't fall
+    // back to the backlight flash cue.
+    return true;
+  }
+
   if (!prepareForBeep()) {
     return false;
   }
@@ -99,6 +105,23 @@ bool AudioManager::beep() {
 }
 
 bool AudioManager::available() const { return available_; }
+
+void AudioManager::setMuted(bool muted) { muted_ = muted; }
+
+bool AudioManager::muted() const { return muted_; }
+
+void AudioManager::setVolume(uint8_t percent) {
+  volumePercent_ = percent > 100 ? 100 : percent;
+}
+
+uint8_t AudioManager::volume() const { return volumePercent_; }
+
+uint8_t AudioManager::dacVolumeRegisterValue() const {
+  // ES8311 DAC volume register 0x32: 0x00 = mute, 0xFF = max (~0.5 dB/step).
+  // Map the 0-100 percentage linearly onto the register range.
+  const uint32_t scaled = (static_cast<uint32_t>(volumePercent_) * kEs8311DacVolumeMax) / 100U;
+  return static_cast<uint8_t>(scaled > kEs8311DacVolumeMax ? kEs8311DacVolumeMax : scaled);
+}
 
 bool AudioManager::enableAudioRail() {
   uint8_t direction = 0xFF;
@@ -287,7 +310,7 @@ bool AudioManager::prepareForBeep() {
     dacMute &= 0x9F;
     writeCodecRegister(kEs8311DacReg31, dacMute);
   }
-  writeCodecRegister(kEs8311DacReg32, kEs8311DacVolumeMax);
+  writeCodecRegister(kEs8311DacReg32, dacVolumeRegisterValue());
   return true;
 }
 

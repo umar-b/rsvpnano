@@ -1063,6 +1063,10 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"fontSizeIndex\":" + String(fontSize);
   body += ",\"idleStandbyMinutes\":" +
           String(preferences_.getUChar(kPrefIdleStandbyMin, 0));
+  body += ",\"audioMuted\":" +
+          String(preferences_.getBool(kPrefAudioMuted, false) ? "true" : "false");
+  body += ",\"audioVolume\":" +
+          String(clampInt(preferences_.getUChar(kPrefAudioVolume, 100), 0, 100));
   body += "}";
   body += ",\"typography\":{";
   body += "\"typeface\":\"";
@@ -1223,6 +1227,16 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
       return false;
     }
     preferences_.putUChar(kPrefIdleStandbyMin, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonBool(body, "audioMuted", boolValue)) {
+    preferences_.putBool(kPrefAudioMuted, boolValue);
+  }
+  if (readJsonInt(body, "audioVolume", intValue)) {
+    if (intValue < 0 || intValue > 100) {
+      error = "audioVolume must be between 0 and 100";
+      return false;
+    }
+    preferences_.putUChar(kPrefAudioVolume, static_cast<uint8_t>(intValue));
   }
   if (readJsonString(body, "typeface", stringValue)) {
     const int value = enumValue(stringValue, typefaceLabels, 3);

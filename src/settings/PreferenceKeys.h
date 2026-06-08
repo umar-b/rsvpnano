@@ -50,6 +50,10 @@ constexpr const char *kPrefPacingPunctuationMs = "pace_pms";
 constexpr const char *kPrefPauseMode = "pause_md";
 constexpr const char *kPrefAccurateTime = "time_est_a";
 
+// Audio.
+constexpr const char *kPrefAudioMuted = "aud_mute";
+constexpr const char *kPrefAudioVolume = "aud_vol";
+
 // Wi-Fi + OTA.
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";

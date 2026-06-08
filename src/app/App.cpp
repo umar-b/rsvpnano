@@ -141,10 +141,12 @@ constexpr size_t kSettingsDisplayFooterIndex = 4;
 constexpr size_t kSettingsDisplayBatteryIndex = 5;
 constexpr size_t kSettingsDisplayScreensaverIndex = 6;
 constexpr size_t kSettingsDisplayIdleStandbyIndex = 7;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 8;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 9;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 10;
-constexpr size_t kSettingsDisplayLanguageIndex = 11;
+constexpr size_t kSettingsDisplayMuteIndex = 8;
+constexpr size_t kSettingsDisplayVolumeIndex = 9;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 10;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 11;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 12;
+constexpr size_t kSettingsDisplayLanguageIndex = 13;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -452,6 +454,11 @@ void App::begin() {
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
+  audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
+  if (audioVolumePercent_ > 100) {
+    audioVolumePercent_ = 100;
+  }
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -563,6 +570,7 @@ void App::begin() {
 
   touchInitialized_ = touch_.begin();
   audio_.begin();
+  applyAudioSettings();
   focusTimer_.begin();
 
 #if RSVP_USB_TRANSFER_ENABLED && RSVP_USB_TRANSFER_AUTO_START
@@ -1130,6 +1138,11 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
+  audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
+  if (audioVolumePercent_ > 100) {
+    audioVolumePercent_ = 100;
+  }
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -1229,6 +1242,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   applyDisplayPreferences(nowMs, false);
   applyTypographySettings(nowMs, false);
   applyPacingSettings();
+  applyAudioSettings();
   if (rerender) {
     renderActiveReader(nowMs);
   }
@@ -2481,6 +2495,16 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayMuteIndex:
+        toggleAudioMute();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayVolumeIndex:
+        cycleAudioVolume();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       case kSettingsDisplayReaderBatteryIndex:
         readerBatteryVisibleWhilePlaying_ = !readerBatteryVisibleWhilePlaying_;
         preferences_.putBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
@@ -3107,6 +3131,8 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
     settingsMenuItems_.push_back("Idle standby: " + idleStandbyLabel());
+    settingsMenuItems_.push_back("Mute audio: " + audioMuteLabel());
+    settingsMenuItems_.push_back("Volume: " + audioVolumeLabel());
     settingsMenuItems_.push_back("Reading battery: " +
                                  onOffLabel(readerBatteryVisibleWhilePlaying_));
     settingsMenuItems_.push_back("Reading chapter: " +
@@ -4108,6 +4134,36 @@ String App::idleStandbyLabel() const {
   }
   return String(idleStandbyMinutes_) + " min";
 }
+
+void App::applyAudioSettings() {
+  audio_.setMuted(audioMuted_);
+  audio_.setVolume(audioVolumePercent_);
+}
+
+void App::toggleAudioMute() {
+  audioMuted_ = !audioMuted_;
+  preferences_.putBool(kPrefAudioMuted, audioMuted_);
+  applyAudioSettings();
+}
+
+void App::cycleAudioVolume() {
+  // 25 -> 50 -> 75 -> 100 -> 25 (percent). Mute is the separate row for silence.
+  if (audioVolumePercent_ < 50) {
+    audioVolumePercent_ = 50;
+  } else if (audioVolumePercent_ < 75) {
+    audioVolumePercent_ = 75;
+  } else if (audioVolumePercent_ < 100) {
+    audioVolumePercent_ = 100;
+  } else {
+    audioVolumePercent_ = 25;
+  }
+  preferences_.putUChar(kPrefAudioVolume, audioVolumePercent_);
+  applyAudioSettings();
+}
+
+String App::audioMuteLabel() const { return audioMuted_ ? "On" : "Off"; }
+
+String App::audioVolumeLabel() const { return String(audioVolumePercent_) + "%"; }
 
 uint32_t App::standbyRngSeed(uint32_t nowMs) const {
   return nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2654435761UL) ^

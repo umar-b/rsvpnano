@@ -291,6 +291,11 @@ class App {
   void maybeAutoStandby(uint32_t nowMs);
   void cycleIdleStandbyTimeout();
   String idleStandbyLabel() const;
+  void applyAudioSettings();
+  void toggleAudioMute();
+  void cycleAudioVolume();
+  String audioMuteLabel() const;
+  String audioVolumeLabel() const;
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   uint32_t standbyRngSeed(uint32_t nowMs) const;
@@ -438,6 +443,8 @@ class App {
   uint8_t brightnessLevelIndex_ = 4;
   uint8_t readerFontSizeIndex_ = 0;
   uint8_t idleStandbyMinutes_ = 0;  // 0 = off (preserves prior behaviour)
+  uint8_t audioVolumePercent_ = 100;
+  bool audioMuted_ = false;
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;
   uint16_t pacingPunctuationDelayMs_ = 200;
