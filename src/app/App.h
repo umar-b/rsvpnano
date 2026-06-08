@@ -12,6 +12,7 @@
 #include "app/Localization.h"
 #include "app/Menu.h"
 #include "audio/AudioManager.h"
+#include "board/BatteryManager.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
@@ -395,6 +396,7 @@ class App {
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
+  battery::Monitor batteryMonitor_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
@@ -403,7 +405,6 @@ class App {
   uint32_t wpmFeedbackUntilMs_ = 0;
   uint32_t lastProgressSaveMs_ = 0;
   uint32_t lastBatterySampleMs_ = 0;
-  uint32_t batteryRuntimeAnchorMs_ = 0;
   uint32_t lastScrollAnimationRenderMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
@@ -467,11 +468,6 @@ class App {
   String pendingUpdateCurrentVersion_;
   String pendingUpdateNewVersion_;
   String batteryLabel_;
-  float batteryFilteredVoltage_ = 0.0f;
-  float batteryFilteredPercent_ = 0.0f;
-  uint8_t batteryDisplayedPercent_ = 0;
-  uint8_t batteryRuntimeAnchorPercent_ = 0;
-  uint32_t batteryRuntimeMinutesRemaining_ = 0;
   TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
@@ -501,10 +497,6 @@ class App {
   bool storageReady_ = false;
   bool pendingBootBookLoad_ = false;
   bool pendingBootBookLegacyFallback_ = false;
-  bool batteryPresent_ = false;
-  bool batterySampleInitialized_ = false;
-  bool batteryRuntimeEstimateReady_ = false;
-  uint8_t batteryCriticalSampleCount_ = 0;
   bool phantomWordsEnabled_ = true;
   bool readerBatteryVisibleWhilePlaying_ = true;
   bool readerChapterVisibleWhilePlaying_ = false;

@@ -29,7 +29,6 @@ constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
 constexpr uint32_t kPowerOffHoldMs = 1600;
 constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
-constexpr uint32_t kBatterySampleIntervalMs = 180000;
 constexpr uint32_t kReaderDoubleTapWindowMs = 520;
 constexpr uint32_t kThemeToggleHoldMs = 900;
 constexpr uint32_t kScrollAnimationFrameMs = 16;
@@ -51,19 +50,9 @@ constexpr size_t kTimeEstimateBlockWords = 256;
 constexpr size_t kTimeEstimateBlocksPerUpdate = 1;
 constexpr uint32_t kTimeEstimateProgressLogMs = 5000;
 constexpr uint32_t kNominalBatteryRuntimeMinutes = 330;
-constexpr uint8_t kBatteryDisplayHysteresisPercent = 2;
-constexpr uint8_t kBatteryRuntimeMinDropPercent = 3;
-constexpr uint32_t kBatteryRuntimeMinElapsedMs = 10UL * 60UL * 1000UL;
-constexpr uint32_t kBatteryPlayingSampleIntervalMs = 10UL * 60UL * 1000UL;
-constexpr uint32_t kBatteryLowSampleIntervalMs = 60UL * 1000UL;
 constexpr uint32_t kBatteryLowWarningRepeatMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kBatteryWarningVisibleMs = 2500;
 constexpr uint32_t kBatteryShutdownNoticeMs = 1500;
-constexpr float kBatteryLowWarningVoltage = 3.50f;
-constexpr float kBatteryCriticalVoltage = 3.30f;
-constexpr uint8_t kBatteryLowWarningPercent = 5;
-constexpr uint8_t kBatteryCriticalPercent = 1;
-constexpr uint8_t kBatteryCriticalConsecutiveSamples = 2;
 constexpr uint32_t kStandbyWakeGraceMs = 900;
 constexpr uint32_t kStandbyFrameMs = 160;
 constexpr uint16_t kStandbyLifeCellPixels = 2;
@@ -1347,15 +1336,8 @@ void App::cycleReaderFontSize(uint32_t nowMs) {
 
 bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
   if (!force) {
-    const bool lowBatteryKnown =
-        batteryPresent_ && batterySampleInitialized_ &&
-        (batteryFilteredVoltage_ <= kBatteryLowWarningVoltage ||
-         batteryDisplayedPercent_ <= kBatteryLowWarningPercent);
-    uint32_t sampleIntervalMs =
-        lowBatteryKnown ? kBatteryLowSampleIntervalMs : kBatterySampleIntervalMs;
-    if (state_ == AppState::Playing && !lowBatteryKnown) {
-      sampleIntervalMs = kBatteryPlayingSampleIntervalMs;
-    }
+    const uint32_t sampleIntervalMs =
+        batteryMonitor_.sampleIntervalMs(state_ == AppState::Playing);
     if (nowMs - lastBatterySampleMs_ < sampleIntervalMs) {
       return false;
     }
@@ -1364,48 +1346,8 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
   lastBatterySampleMs_ = nowMs;
 
   BoardConfig::BatteryStatus status;
-  if (BoardConfig::readBatteryStatus(status)) {
-    batteryPresent_ = true;
-    if (!batterySampleInitialized_) {
-      batteryFilteredVoltage_ = status.voltage;
-      batteryFilteredPercent_ = status.percent;
-      batteryDisplayedPercent_ = status.percent;
-      batteryRuntimeAnchorPercent_ = status.percent;
-      batteryRuntimeAnchorMs_ = nowMs;
-      batterySampleInitialized_ = true;
-    } else {
-      batteryFilteredVoltage_ = (batteryFilteredVoltage_ * 0.72f) + (status.voltage * 0.28f);
-      batteryFilteredPercent_ = (batteryFilteredPercent_ * 0.72f) + (status.percent * 0.28f);
-
-      const int filteredPercent =
-          std::max(0, std::min(100, static_cast<int>(batteryFilteredPercent_ + 0.5f)));
-      const int delta = filteredPercent - static_cast<int>(batteryDisplayedPercent_);
-      if (force || abs(delta) >= kBatteryDisplayHysteresisPercent ||
-          filteredPercent <= 10 || filteredPercent >= 99) {
-        batteryDisplayedPercent_ = static_cast<uint8_t>(filteredPercent);
-      }
-
-      if (batteryDisplayedPercent_ > batteryRuntimeAnchorPercent_) {
-        batteryRuntimeAnchorPercent_ = batteryDisplayedPercent_;
-        batteryRuntimeAnchorMs_ = nowMs;
-        batteryRuntimeEstimateReady_ = false;
-      } else {
-        const uint8_t percentDrop = batteryRuntimeAnchorPercent_ - batteryDisplayedPercent_;
-        const uint32_t elapsedMs = nowMs - batteryRuntimeAnchorMs_;
-        if (percentDrop >= kBatteryRuntimeMinDropPercent &&
-            elapsedMs >= kBatteryRuntimeMinElapsedMs) {
-          const float minutesPerPercent =
-              (static_cast<float>(elapsedMs) / 60000.0f) / static_cast<float>(percentDrop);
-          batteryRuntimeMinutesRemaining_ =
-              static_cast<uint32_t>(batteryDisplayedPercent_ * minutesPerPercent + 0.5f);
-          batteryRuntimeEstimateReady_ = true;
-        }
-      }
-    }
-  } else {
-    batteryPresent_ = false;
-    batteryCriticalSampleCount_ = 0;
-  }
+  const bool present = BoardConfig::readBatteryStatus(status);
+  batteryMonitor_.update(nowMs, present, status.voltage, status.percent, force);
 
   handleBatteryProtection(nowMs);
   if (powerOffStarted_) {
@@ -1422,7 +1364,8 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
   if (!batteryLabel_.isEmpty()) {
     Serial.printf("[power] battery %.2f V raw=%u%% shown=%u%% label=%s\n", status.voltage,
                   static_cast<unsigned int>(status.percent),
-                  static_cast<unsigned int>(batteryDisplayedPercent_), batteryLabel_.c_str());
+                  static_cast<unsigned int>(batteryMonitor_.displayedPercent()),
+                  batteryLabel_.c_str());
   } else {
     Serial.println("[power] battery not detected");
   }
@@ -1430,43 +1373,27 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
 }
 
 void App::handleBatteryProtection(uint32_t nowMs) {
-  if (!batteryPresent_ || !batterySampleInitialized_) {
-    batteryCriticalSampleCount_ = 0;
-    return;
-  }
-
-  const bool critical = batteryFilteredVoltage_ <= kBatteryCriticalVoltage ||
-                        batteryDisplayedPercent_ <= kBatteryCriticalPercent;
-  if (critical) {
-    if (batteryCriticalSampleCount_ < 255) {
-      ++batteryCriticalSampleCount_;
+  switch (batteryMonitor_.protectionAction()) {
+    case battery::Action::Shutdown: {
+      const String line2 =
+          batteryVoltageLabel() + " " +
+          String(static_cast<unsigned int>(batteryMonitor_.displayedPercent())) + "%";
+      Serial.printf("[power] critical battery %.2f V %u%%; powering off\n",
+                    static_cast<double>(batteryMonitor_.filteredVoltage()),
+                    static_cast<unsigned int>(batteryMonitor_.displayedPercent()));
+      display_.renderStatus("LOW BATTERY", "Powering off", line2);
+      delay(kBatteryShutdownNoticeMs);
+      enterPowerOff(millis());
+      return;
     }
-  } else {
-    batteryCriticalSampleCount_ = 0;
-  }
-
-  if (batteryCriticalSampleCount_ >= kBatteryCriticalConsecutiveSamples) {
-    const String line2 =
-        batteryVoltageLabel() + " " + String(static_cast<unsigned int>(batteryDisplayedPercent_)) +
-        "%";
-    Serial.printf("[power] critical battery %.2f V %u%%; powering off\n",
-                  static_cast<double>(batteryFilteredVoltage_),
-                  static_cast<unsigned int>(batteryDisplayedPercent_));
-    display_.renderStatus("LOW BATTERY", "Powering off", line2);
-    delay(kBatteryShutdownNoticeMs);
-    enterPowerOff(millis());
-    return;
-  }
-
-  const bool low = batteryFilteredVoltage_ <= kBatteryLowWarningVoltage ||
-                   batteryDisplayedPercent_ <= kBatteryLowWarningPercent;
-  if (!low) {
-    return;
-  }
-
-  if (lastLowBatteryWarningMs_ == 0 ||
-      nowMs - lastLowBatteryWarningMs_ >= kBatteryLowWarningRepeatMs) {
-    showLowBatteryWarning(nowMs);
+    case battery::Action::Warn:
+      if (lastLowBatteryWarningMs_ == 0 ||
+          nowMs - lastLowBatteryWarningMs_ >= kBatteryLowWarningRepeatMs) {
+        showLowBatteryWarning(nowMs);
+      }
+      return;
+    case battery::Action::None:
+      return;
   }
 }
 
@@ -1486,11 +1413,11 @@ void App::showLowBatteryWarning(uint32_t nowMs) {
   }
 
   const String line1 =
-      String(static_cast<unsigned int>(batteryDisplayedPercent_)) + "% remaining";
+      String(static_cast<unsigned int>(batteryMonitor_.displayedPercent())) + "% remaining";
   display_.renderStatus("LOW BATTERY", line1, batteryVoltageLabel() + " charge soon");
   Serial.printf("[power] low battery warning %.2f V %u%%\n",
-                static_cast<double>(batteryFilteredVoltage_),
-                static_cast<unsigned int>(batteryDisplayedPercent_));
+                static_cast<double>(batteryMonitor_.filteredVoltage()),
+                static_cast<unsigned int>(batteryMonitor_.displayedPercent()));
 }
 
 void App::updateBatteryWarningOverlay(uint32_t nowMs) {
@@ -4072,7 +3999,7 @@ void App::exitStandby(uint32_t nowMs) {
 
 uint32_t App::standbyRngSeed(uint32_t nowMs) const {
   return nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2654435761UL) ^
-         (static_cast<uint32_t>(batteryDisplayedPercent_) << 24);
+         (static_cast<uint32_t>(batteryMonitor_.displayedPercent()) << 24);
 }
 
 void App::seedStandbyScreensaver(uint32_t nowMs) {
@@ -4798,7 +4725,7 @@ String App::currentFooterMetricLabel() const {
 }
 
 String App::currentBatteryLabel() const {
-  if (!batteryPresent_ || !batterySampleInitialized_) {
+  if (!batteryMonitor_.present() || !batteryMonitor_.initialized()) {
     return "";
   }
 
@@ -4810,7 +4737,7 @@ String App::currentBatteryLabel() const {
     return batteryVoltageLabel();
   }
 
-  return String(static_cast<unsigned int>(batteryDisplayedPercent_)) + "%";
+  return String(static_cast<unsigned int>(batteryMonitor_.displayedPercent())) + "%";
 }
 
 String App::footerMetricModeLabel() const {
@@ -4852,16 +4779,19 @@ String App::screensaverModeLabel() const {
 }
 
 String App::batteryTimeRemainingLabel() const {
-  if (batteryRuntimeEstimateReady_) {
-    return formatBatteryTimeRemaining(batteryRuntimeMinutesRemaining_);
+  if (batteryMonitor_.runtimeEstimateReady()) {
+    return formatBatteryTimeRemaining(batteryMonitor_.runtimeMinutesRemaining());
   }
 
   const uint32_t estimatedMinutes =
-      (static_cast<uint32_t>(batteryDisplayedPercent_) * kNominalBatteryRuntimeMinutes) / 100UL;
+      (static_cast<uint32_t>(batteryMonitor_.displayedPercent()) * kNominalBatteryRuntimeMinutes) /
+      100UL;
   return formatBatteryTimeRemaining(estimatedMinutes);
 }
 
-String App::batteryVoltageLabel() const { return String(batteryFilteredVoltage_, 2) + "V"; }
+String App::batteryVoltageLabel() const {
+  return String(batteryMonitor_.filteredVoltage(), 2) + "V";
+}
 
 String App::formatBatteryTimeRemaining(uint32_t minutes) const {
   if (minutes < 1) {
