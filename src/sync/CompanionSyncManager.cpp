@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "settings/PreferenceKeys.h"
+#include "settings/PreferenceSpec.h"
 
 #ifndef RSVP_FIRMWARE_VERSION
 #define RSVP_FIRMWARE_VERSION "dev"
@@ -29,9 +30,13 @@ constexpr size_t kMaxMetadataLineChars = 160;
 constexpr size_t kMaxSettingsPatchBytes = 2048;
 constexpr size_t kMaxRssFeedsPatchBytes = 4096;
 constexpr size_t kMaxRssFeeds = 24;
+// Numeric bound constants are aliases onto the canonical domains in
+// settings/PreferenceSpec.h -- the single source of truth shared with App's
+// device-side clamp. The values below must not be edited here; change the range
+// in PreferenceSpec.h and both the device and this companion track it.
 constexpr uint16_t kDefaultWpm = 300;
-constexpr uint16_t kMinWpm = 10;
-constexpr uint16_t kMaxWpm = 1000;
+constexpr uint16_t kMinWpm = kWpmRange.min;
+constexpr uint16_t kMaxWpm = kWpmRange.max;
 constexpr uint8_t kDefaultBrightness = 3;
 constexpr uint8_t kMaxBrightness = 4;
 constexpr uint8_t kMaxUiLanguage = 1;
@@ -43,17 +48,17 @@ constexpr uint8_t kMaxReaderFontSize = 2;
 constexpr uint8_t kMaxReaderTypeface = 2;
 constexpr uint8_t kMaxPauseMode = 1;
 constexpr uint16_t kDefaultPacingDelayMs = 200;
-constexpr uint16_t kMaxPacingDelayMs = 600;
-constexpr int8_t kMinTypographyTracking = -2;
-constexpr int8_t kMaxTypographyTracking = 3;
-constexpr uint8_t kMinTypographyAnchor = 30;
-constexpr uint8_t kMaxTypographyAnchor = 40;
+constexpr uint16_t kMaxPacingDelayMs = kPacingDelayMsRange.max;
+constexpr int8_t kMinTypographyTracking = kTypographyTrackingRange.min;
+constexpr int8_t kMaxTypographyTracking = kTypographyTrackingRange.max;
+constexpr uint8_t kMinTypographyAnchor = kTypographyAnchorRange.min;
+constexpr uint8_t kMaxTypographyAnchor = kTypographyAnchorRange.max;
 constexpr uint8_t kDefaultTypographyAnchor = 30;
-constexpr uint8_t kMinTypographyGuideWidth = 12;
-constexpr uint8_t kMaxTypographyGuideWidth = 30;
+constexpr uint8_t kMinTypographyGuideWidth = kTypographyGuideWidthRange.min;
+constexpr uint8_t kMaxTypographyGuideWidth = kTypographyGuideWidthRange.max;
 constexpr uint8_t kDefaultTypographyGuideWidth = 30;
-constexpr uint8_t kMinTypographyGuideGap = 2;
-constexpr uint8_t kMaxTypographyGuideGap = 8;
+constexpr uint8_t kMinTypographyGuideGap = kTypographyGuideGapRange.min;
+constexpr uint8_t kMaxTypographyGuideGap = kTypographyGuideGapRange.max;
 constexpr uint8_t kDefaultTypographyGuideGap = 5;
 
 const char kWebCompanionHtml[] PROGMEM = R"HTML(<!doctype html>
@@ -1295,7 +1300,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
   String stringValue;
 
   if (readJsonInt(body, "wpm", intValue)) {
-    if (intValue < kMinWpm || intValue > kMaxWpm) {
+    if (!inRange(intValue, kWpmRange)) {
       error = "wpm must be between 10 and 1000";
       return false;
     }
@@ -1319,21 +1324,21 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
   }
   preferences_.putBool(kPrefAccurateTime, true);
   if (readJsonInt(body, "longWordMs", intValue)) {
-    if (intValue < 0 || intValue > kMaxPacingDelayMs) {
+    if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "longWordMs must be between 0 and 600";
       return false;
     }
     preferences_.putUShort(kPrefPacingLongMs, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "complexWordMs", intValue)) {
-    if (intValue < 0 || intValue > kMaxPacingDelayMs) {
+    if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "complexWordMs must be between 0 and 600";
       return false;
     }
     preferences_.putUShort(kPrefPacingComplexMs, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "punctuationMs", intValue)) {
-    if (intValue < 0 || intValue > kMaxPacingDelayMs) {
+    if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "punctuationMs must be between 0 and 600";
       return false;
     }
@@ -1414,35 +1419,35 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putBool(kPrefAudioMuted, boolValue);
   }
   if (readJsonInt(body, "audioVolume", intValue)) {
-    if (intValue < 0 || intValue > 100) {
+    if (!inRange(intValue, kAudioVolumeRange)) {
       error = "audioVolume must be between 0 and 100";
       return false;
     }
     preferences_.putUChar(kPrefAudioVolume, static_cast<uint8_t>(intValue));
   }
   if (readJsonInt(body, "swipeThresholdPx", intValue)) {
-    if (intValue < 12 || intValue > 120) {
+    if (!inRange(intValue, kGestureSwipePxRange)) {
       error = "swipeThresholdPx must be between 12 and 120";
       return false;
     }
     preferences_.putUShort(kPrefGestureSwipePx, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "tapSlopPx", intValue)) {
-    if (intValue < 8 || intValue > 80) {
+    if (!inRange(intValue, kGestureTapPxRange)) {
       error = "tapSlopPx must be between 8 and 80";
       return false;
     }
     preferences_.putUShort(kPrefGestureTapPx, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "scrubStepPx", intValue)) {
-    if (intValue < 1 || intValue > 120) {
+    if (!inRange(intValue, kGestureScrubPxRange)) {
       error = "scrubStepPx must be between 1 and 120";
       return false;
     }
     preferences_.putUShort(kPrefGestureScrubPx, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "playHoldMs", intValue)) {
-    if (intValue < 120 || intValue > 1500) {
+    if (!inRange(intValue, kGestureHoldMsRange)) {
       error = "playHoldMs must be between 120 and 1500";
       return false;
     }
@@ -1460,28 +1465,28 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putBool(kPrefTypographyFocusHighlight, boolValue);
   }
   if (readJsonInt(body, "tracking", intValue)) {
-    if (intValue < kMinTypographyTracking || intValue > kMaxTypographyTracking) {
+    if (!inRange(intValue, kTypographyTrackingRange)) {
       error = "tracking is out of range";
       return false;
     }
     preferences_.putChar(kPrefTypographyTracking, static_cast<int8_t>(intValue));
   }
   if (readJsonInt(body, "anchorPercent", intValue)) {
-    if (intValue < kMinTypographyAnchor || intValue > kMaxTypographyAnchor) {
+    if (!inRange(intValue, kTypographyAnchorRange)) {
       error = "anchorPercent is out of range";
       return false;
     }
     preferences_.putUChar(kPrefTypographyAnchor, static_cast<uint8_t>(intValue));
   }
   if (readJsonInt(body, "guideWidth", intValue)) {
-    if (intValue < kMinTypographyGuideWidth || intValue > kMaxTypographyGuideWidth) {
+    if (!inRange(intValue, kTypographyGuideWidthRange)) {
       error = "guideWidth is out of range";
       return false;
     }
     preferences_.putUChar(kPrefTypographyGuideWidth, static_cast<uint8_t>(intValue));
   }
   if (readJsonInt(body, "guideGap", intValue)) {
-    if (intValue < kMinTypographyGuideGap || intValue > kMaxTypographyGuideGap) {
+    if (!inRange(intValue, kTypographyGuideGapRange)) {
       error = "guideGap is out of range";
       return false;
     }

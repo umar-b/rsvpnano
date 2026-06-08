@@ -15,6 +15,7 @@
 
 #include "board/BoardConfig.h"
 #include "settings/PreferenceKeys.h"
+#include "settings/PreferenceSpec.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
@@ -184,27 +185,32 @@ using namespace settings;
 constexpr size_t kReaderFontSizeCount = 3;
 constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
 constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
-constexpr uint16_t kPacingDelayMinMs = 0;
-constexpr uint16_t kPacingDelayMaxMs = 600;
+// Stored-value bounds are aliases onto the canonical domains in
+// settings/PreferenceSpec.h, shared with CompanionSyncManager's strict path.
+// Change a range in PreferenceSpec.h, not here; the device clamp and the
+// companion validator both track it. Step/low-WPM constants are UI cadence,
+// not domains, so they stay local.
+constexpr uint16_t kPacingDelayMinMs = kPacingDelayMsRange.min;
+constexpr uint16_t kPacingDelayMaxMs = kPacingDelayMsRange.max;
 constexpr uint16_t kPacingDelayStepMs = 50;
 constexpr uint16_t kDefaultPacingDelayMs = 200;
-constexpr uint16_t kSettingsWpmMin = 10;
+constexpr uint16_t kSettingsWpmMin = kWpmRange.min;
 constexpr uint16_t kSettingsWpmLowMax = 100;
 constexpr uint16_t kSettingsWpmLowStep = 10;
-constexpr uint16_t kSettingsWpmMax = 1000;
+constexpr uint16_t kSettingsWpmMax = kWpmRange.max;
 constexpr uint16_t kSettingsWpmHighStep = 25;
-constexpr int8_t kTypographyTrackingMin = -2;
-constexpr int8_t kTypographyTrackingMax = 3;
-constexpr uint8_t kTypographyAnchorMin = 30;
-constexpr uint8_t kTypographyAnchorMax = 40;
+constexpr int8_t kTypographyTrackingMin = kTypographyTrackingRange.min;
+constexpr int8_t kTypographyTrackingMax = kTypographyTrackingRange.max;
+constexpr uint8_t kTypographyAnchorMin = kTypographyAnchorRange.min;
+constexpr uint8_t kTypographyAnchorMax = kTypographyAnchorRange.max;
 constexpr uint8_t kLeftHandAnchorOffset = 20;
 constexpr uint8_t kLeftHandAnchorMin = kTypographyAnchorMin + kLeftHandAnchorOffset;
 constexpr uint8_t kLeftHandAnchorMax = kTypographyAnchorMax + kLeftHandAnchorOffset;
-constexpr uint8_t kTypographyGuideWidthMin = 12;
-constexpr uint8_t kTypographyGuideWidthMax = 30;
+constexpr uint8_t kTypographyGuideWidthMin = kTypographyGuideWidthRange.min;
+constexpr uint8_t kTypographyGuideWidthMax = kTypographyGuideWidthRange.max;
 constexpr uint8_t kTypographyGuideWidthStep = 2;
-constexpr uint8_t kTypographyGuideGapMin = 2;
-constexpr uint8_t kTypographyGuideGapMax = 8;
+constexpr uint8_t kTypographyGuideGapMin = kTypographyGuideGapRange.min;
+constexpr uint8_t kTypographyGuideGapMax = kTypographyGuideGapRange.max;
 constexpr const char *kTypographyPreviewWords[] = {
     "minimum",
     "encyclopaedia",
