@@ -21,17 +21,12 @@ constexpr uint8_t kImuResetResultReg = 0x4D;
 constexpr uint8_t kImuResetResultValue = 0x80;
 constexpr uint8_t kImuWhoAmIValue = 0x05;
 
-constexpr uint32_t kOrientationStableMs = 700;
 constexpr uint32_t kTouchStartArmDelayMs = 350;
 constexpr uint32_t kPostTimerFlipGraceMs = 900;
 constexpr uint32_t kFeedbackMs = 900;
 constexpr uint32_t kTouchDurationMs = 2UL * 60UL * 1000UL;
 constexpr uint32_t kWorkDurationMs = 20UL * 60UL * 1000UL;
 constexpr uint32_t kBreakDurationMs = 5UL * 60UL * 1000UL;
-
-constexpr float kSideAxisThreshold = 0.78f;
-constexpr float kCrossAxisLimit = 0.42f;
-constexpr float kFlatAxisThreshold = 0.84f;
 
 }  // namespace
 
@@ -59,8 +54,8 @@ void FocusTimer::update(uint32_t nowMs) {
       break;
 
     case State::WaitForTouchStart:
-      if (orientationInputArmed(nowMs) && isShortSide(stableOrientation_)) {
-        startMode(TimerMode::Touch, nowMs, kTouchDurationMs, stableOrientation_);
+      if (orientationInputArmed(nowMs) && isShortSide(orientationStabilizer_.stable())) {
+        startMode(TimerMode::Touch, nowMs, kTouchDurationMs, orientationStabilizer_.stable());
         transitionTo(State::TouchRunning, nowMs);
       }
       break;
@@ -77,10 +72,10 @@ void FocusTimer::update(uint32_t nowMs) {
       if (!orientationInputArmed(nowMs)) {
         break;
       }
-      if (stableOrientation_ == oppositeShortSide(lastShortSide_)) {
-        startMode(TimerMode::Work, nowMs, kWorkDurationMs, stableOrientation_);
+      if (orientationStabilizer_.stable() == oppositeShortSide(lastShortSide_)) {
+        startMode(TimerMode::Work, nowMs, kWorkDurationMs, orientationStabilizer_.stable());
         transitionTo(State::WorkRunning, nowMs);
-      } else if (stableOrientation_ == OrientationState::LongSide) {
+      } else if (orientationStabilizer_.stable() == OrientationState::LongSide) {
         startMode(TimerMode::Break, nowMs, kBreakDurationMs, OrientationState::LongSide);
         transitionTo(State::BreakRunning, nowMs);
       }
@@ -98,10 +93,10 @@ void FocusTimer::update(uint32_t nowMs) {
       if (!orientationInputArmed(nowMs)) {
         break;
       }
-      if (stableOrientation_ == oppositeShortSide(lastShortSide_)) {
-        startMode(TimerMode::Work, nowMs, kWorkDurationMs, stableOrientation_);
+      if (orientationStabilizer_.stable() == oppositeShortSide(lastShortSide_)) {
+        startMode(TimerMode::Work, nowMs, kWorkDurationMs, orientationStabilizer_.stable());
         transitionTo(State::WorkRunning, nowMs);
-      } else if (stableOrientation_ == OrientationState::LongSide) {
+      } else if (orientationStabilizer_.stable() == OrientationState::LongSide) {
         startMode(TimerMode::Break, nowMs, kBreakDurationMs, OrientationState::LongSide);
         transitionTo(State::BreakRunning, nowMs);
       }
@@ -116,8 +111,8 @@ void FocusTimer::update(uint32_t nowMs) {
       break;
 
     case State::WaitAfterBreak:
-      if (orientationInputArmed(nowMs) && isShortSide(stableOrientation_)) {
-        startMode(TimerMode::Work, nowMs, kWorkDurationMs, stableOrientation_);
+      if (orientationInputArmed(nowMs) && isShortSide(orientationStabilizer_.stable())) {
+        startMode(TimerMode::Work, nowMs, kWorkDurationMs, orientationStabilizer_.stable());
         transitionTo(State::WorkRunning, nowMs);
       }
       break;
@@ -377,8 +372,7 @@ bool FocusTimer::readAccelerometer(float &x, float &y, float &z) {
 
 void FocusTimer::updateOrientation(uint32_t nowMs) {
   if (!imuAvailable_) {
-    rawOrientation_ = OrientationState::Unknown;
-    stableOrientation_ = OrientationState::Unknown;
+    orientationStabilizer_.markUnavailable();
     return;
   }
 
@@ -389,47 +383,10 @@ void FocusTimer::updateOrientation(uint32_t nowMs) {
     return;
   }
 
-  rawOrientation_ = classify(x, y, z);
-  if (rawOrientation_ != candidateOrientation_) {
-    candidateOrientation_ = rawOrientation_;
-    candidateSinceMs_ = nowMs;
-    return;
-  }
-
-  if ((nowMs - candidateSinceMs_) >= kOrientationStableMs) {
-    stableOrientation_ = candidateOrientation_;
-  }
+  orientationStabilizer_.update(nowMs, orientation::classify(x, y, z));
 }
 
-void FocusTimer::resetOrientationStability() {
-  rawOrientation_ = OrientationState::Unknown;
-  stableOrientation_ = OrientationState::Unknown;
-  candidateOrientation_ = OrientationState::Unknown;
-  candidateSinceMs_ = 0;
-}
-
-FocusTimer::OrientationState FocusTimer::classify(float x, float y, float z) const {
-  if (fabsf(z) >= kFlatAxisThreshold && fabsf(x) <= 0.30f && fabsf(y) <= 0.30f) {
-    return OrientationState::FlatBack;
-  }
-
-  if (x >= kSideAxisThreshold && fabsf(y) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::ShortSideA;
-  }
-
-  if (x <= -kSideAxisThreshold && fabsf(y) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::ShortSideB;
-  }
-
-  if (fabsf(y) >= kSideAxisThreshold && fabsf(x) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::LongSide;
-  }
-
-  return OrientationState::Unknown;
-}
+void FocusTimer::resetOrientationStability() { orientationStabilizer_.reset(); }
 
 bool FocusTimer::orientationInputArmed(uint32_t nowMs) const {
   switch (state_) {

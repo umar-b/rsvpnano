@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "board/BoardConfig.h"
+#include "timer/Orientation.h"
 
 class FocusTimer {
  public:
@@ -59,13 +60,9 @@ class FocusTimer {
     Break,
   };
 
-  enum class OrientationState : uint8_t {
-    ShortSideA = 0,
-    ShortSideB,
-    LongSide,
-    FlatBack,
-    Unknown,
-  };
+  // Orientation faces live in the orientation module; keep the historical
+  // name so the timer's helpers and members read unchanged.
+  using OrientationState = orientation::Side;
 
   bool initImu();
   bool readRegister(uint8_t reg, uint8_t &value);
@@ -75,7 +72,6 @@ class FocusTimer {
   bool readAccelerometer(float &x, float &y, float &z);
   void updateOrientation(uint32_t nowMs);
   void resetOrientationStability();
-  OrientationState classify(float x, float y, float z) const;
   bool orientationInputArmed(uint32_t nowMs) const;
   void transitionTo(State nextState, uint32_t nowMs);
   void clearSession();
@@ -91,12 +87,9 @@ class FocusTimer {
 
   bool imuAvailable_ = false;
   float accelScale_ = 4.0f / 32768.0f;
-  OrientationState rawOrientation_ = OrientationState::Unknown;
-  OrientationState stableOrientation_ = OrientationState::Unknown;
-  OrientationState candidateOrientation_ = OrientationState::Unknown;
+  orientation::Stabilizer orientationStabilizer_;
   OrientationState activeStartOrientation_ = OrientationState::Unknown;
   OrientationState lastShortSide_ = OrientationState::Unknown;
-  uint32_t candidateSinceMs_ = 0;
 
   State state_ = State::Unavailable;
   Genre genre_ = Genre::None;
