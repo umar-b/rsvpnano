@@ -286,6 +286,7 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void enterStandby(uint32_t nowMs);
   void exitStandby(uint32_t nowMs);
+  void handleStandbyTouchWake(uint32_t nowMs);
   void noteUserInput(uint32_t nowMs);
   void maybeAutoStandby(uint32_t nowMs);
   void cycleIdleStandbyTimeout();
@@ -491,6 +492,9 @@ class App {
   bool standbyComboHandled_ = false;
   bool standbyButtonsReleased_ = false;
   bool standbyScreenOffActive_ = false;
+  bool standbyWakeTouchActive_ = false;
+  uint16_t standbyWakeStartX_ = 0;
+  uint16_t standbyWakeStartY_ = 0;
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;

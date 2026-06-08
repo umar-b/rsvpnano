@@ -639,7 +639,10 @@ void App::update(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Standby) {
-    handleTouch(nowMs);
+    handleStandbyTouchWake(nowMs);
+    if (state_ != AppState::Standby) {
+      return;
+    }
     updateStandbyScreensaver(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
       lastStateLogMs_ = nowMs;
@@ -3977,6 +3980,7 @@ void App::enterStandby(uint32_t nowMs) {
   batteryWarningOverlayVisible_ = false;
   standbyEnteredMs_ = nowMs;
   standbyButtonsReleased_ = false;
+  standbyWakeTouchActive_ = false;
   lastStandbyFrameMs_ = 0;
   setState(AppState::Standby, nowMs);
   Serial.println("[app] standby screensaver started");
@@ -4008,6 +4012,49 @@ void App::exitStandby(uint32_t nowMs) {
     standbyScreenOffActive_ = false;
   }
   setState(nextState, nowMs);
+}
+
+void App::handleStandbyTouchWake(uint32_t nowMs) {
+  if (!touchInitialized_) {
+    return;
+  }
+
+  TouchEvent ev;
+  if (!touch_.poll(ev)) {
+    return;
+  }
+
+  // Ignore any touch inside the wake-grace window so the entering button combo
+  // (or a stray contact at sleep) does not instantly wake the device. The grace
+  // gate mirrors the button wake path.
+  const bool pastGrace = nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs;
+  if (!pastGrace || button_.isHeld() || powerButton_.isHeld()) {
+    standbyWakeTouchActive_ = false;
+    return;
+  }
+
+  if (ev.phase == TouchPhase::Start) {
+    standbyWakeTouchActive_ = true;
+    standbyWakeStartX_ = ev.x;
+    standbyWakeStartY_ = ev.y;
+    return;
+  }
+
+  if (!standbyWakeTouchActive_) {
+    return;
+  }
+
+  if (ev.phase == TouchPhase::End) {
+    const int absDeltaX = abs(static_cast<int>(ev.x) - static_cast<int>(standbyWakeStartX_));
+    const int absDeltaY = abs(static_cast<int>(ev.y) - static_cast<int>(standbyWakeStartY_));
+    standbyWakeTouchActive_ = false;
+    // Decision 1: any tap (within the slop box) after the grace window wakes.
+    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
+      noteUserInput(nowMs);  // reset the idle-standby timer on wake
+      Serial.println("[app] tap wake from standby");
+      exitStandby(nowMs);
+    }
+  }
 }
 
 void App::noteUserInput(uint32_t nowMs) { lastInputMs_ = nowMs; }
