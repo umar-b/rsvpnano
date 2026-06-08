@@ -58,6 +58,10 @@ constexpr uint32_t kChapterTransitionMs = 1400;
 constexpr uint8_t kBrightnessLevels[] = {40, 55, 70, 85, 100};
 constexpr uint8_t kNightBrightnessLevels[] = {35, 40, 45, 50, 55};
 constexpr size_t kBrightnessLevelCount = sizeof(kBrightnessLevels) / sizeof(kBrightnessLevels[0]);
+// Bind the option array to the shared domain so a new brightness level forces
+// updating settings::kBrightnessIndexRange (which the companion validates).
+static_assert(kBrightnessLevelCount == settings::kBrightnessIndexRange.max + 1,
+              "brightness levels out of sync with settings::kBrightnessIndexRange");
 
 namespace {
 
@@ -183,6 +187,8 @@ constexpr size_t kFocusTimerGenreFirstIndex = 1;
 // the web companion; pull them into scope so existing call sites are unchanged.
 using namespace settings;
 constexpr size_t kReaderFontSizeCount = 3;
+static_assert(kReaderFontSizeCount == settings::kReaderFontSizeRange.max + 1,
+              "reader font sizes out of sync with settings::kReaderFontSizeRange");
 constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
 constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
 // Stored-value bounds are aliases onto the canonical domains in

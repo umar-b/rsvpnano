@@ -48,8 +48,19 @@ void test_typography_anchor_domain_is_single_value() {
   TEST_ASSERT_EQUAL_INT(40, settings::kTypographyAnchorRange.max);
 }
 
+void test_index_domains_start_at_zero() {
+  // Array-backed index domains: 0..count-1, exclusive of count.
+  TEST_ASSERT_EQUAL_INT(0, settings::kBrightnessIndexRange.min);
+  TEST_ASSERT_EQUAL_INT(4, settings::kBrightnessIndexRange.max);
+  TEST_ASSERT_TRUE(inRange(0, settings::kBrightnessIndexRange));
+  TEST_ASSERT_FALSE(inRange(5, settings::kBrightnessIndexRange));
+  TEST_ASSERT_EQUAL_INT(2, clampToRange(9, settings::kReaderFontSizeRange));
+  TEST_ASSERT_FALSE(inRange(3, settings::kReaderFontSizeRange));
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
+  RUN_TEST(test_index_domains_start_at_zero);
   RUN_TEST(test_in_range_inclusive_of_both_ends);
   RUN_TEST(test_in_range_rejects_outside);
   RUN_TEST(test_clamp_pulls_into_domain);

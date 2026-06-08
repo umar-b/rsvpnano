@@ -40,6 +40,13 @@ constexpr IntRange kPacingDelayMsRange{0, 600};
 // Audio.
 constexpr IntRange kAudioVolumeRange{0, 100};
 
+// Index domains backed by an on-device option array (brightness levels, reader
+// font sizes). The array still lives in App; a static_assert there binds its
+// size to the max below, so the array and this spec cannot drift. The companion
+// validates JSON against the same range.
+constexpr IntRange kBrightnessIndexRange{0, 4};
+constexpr IntRange kReaderFontSizeRange{0, 2};
+
 // Typography (stored-value domains).
 constexpr IntRange kTypographyTrackingRange{-2, 3};
 constexpr IntRange kTypographyAnchorRange{30, 40};

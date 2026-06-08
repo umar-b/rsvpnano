@@ -38,13 +38,13 @@ constexpr uint16_t kDefaultWpm = 300;
 constexpr uint16_t kMinWpm = kWpmRange.min;
 constexpr uint16_t kMaxWpm = kWpmRange.max;
 constexpr uint8_t kDefaultBrightness = 3;
-constexpr uint8_t kMaxBrightness = 4;
+constexpr uint8_t kMaxBrightness = kBrightnessIndexRange.max;
 constexpr uint8_t kMaxUiLanguage = 1;
 constexpr uint8_t kMaxReaderMode = 1;
 constexpr uint8_t kMaxHandedness = 1;
 constexpr uint8_t kMaxFooterMetric = 2;
 constexpr uint8_t kMaxBatteryLabel = 2;
-constexpr uint8_t kMaxReaderFontSize = 2;
+constexpr uint8_t kMaxReaderFontSize = kReaderFontSizeRange.max;
 constexpr uint8_t kMaxReaderTypeface = 2;
 constexpr uint8_t kMaxPauseMode = 1;
 constexpr uint16_t kDefaultPacingDelayMs = 200;
@@ -1345,7 +1345,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putUShort(kPrefPacingPunctuationMs, static_cast<uint16_t>(intValue));
   }
   if (readJsonInt(body, "brightnessIndex", intValue)) {
-    if (intValue < 0 || intValue > kMaxBrightness) {
+    if (!inRange(intValue, kBrightnessIndexRange)) {
       error = "brightnessIndex must be between 0 and 4";
       return false;
     }
@@ -1401,7 +1401,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putBool(kPrefPhantomWords, boolValue);
   }
   if (readJsonInt(body, "fontSizeIndex", intValue)) {
-    if (intValue < 0 || intValue > kMaxReaderFontSize) {
+    if (!inRange(intValue, kReaderFontSizeRange)) {
       error = "fontSizeIndex must be between 0 and 2";
       return false;
     }
