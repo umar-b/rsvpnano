@@ -50,4 +50,14 @@ int browseScrollRatePermille(int y, int displayHeight);
 // WPM step for a vertical drag: up (negative deltaY) raises, down lowers.
 int wpmDeltaForDrag(int deltaY);
 
+// Reader tap zones -- pure hit-testing for the three tappable regions of the
+// reading screen, keyed only on the tap coordinates and the panel size (logical
+// pixels, post-rotation; App supplies BoardConfig::DISPLAY_WIDTH/HEIGHT). The
+// zone sizes live inside the module. App keeps the non-geometry guards (am I
+// playing, is the footer visible, is there a battery label) and the dispatch
+// order; these answer only "is the point inside the zone".
+bool isFooterMetricTap(int x, int y, int displayWidth, int displayHeight);  // bottom-right
+bool isBatteryBadgeTap(int x, int y, int displayWidth);                     // top-right
+bool isPreviousSentenceTap(int x, int y);                                   // top-left corner
+
 }  // namespace touchgesture

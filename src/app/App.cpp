@@ -33,12 +33,6 @@ constexpr uint32_t kReaderDoubleTapWindowMs = 520;
 constexpr uint32_t kThemeToggleHoldMs = 900;
 constexpr uint32_t kScrollAnimationFrameMs = 16;
 constexpr uint16_t kReaderDoubleTapSlopPx = 92;
-constexpr uint16_t kPreviousSentenceTapWidthPx = 96;
-constexpr uint16_t kPreviousSentenceTapHeightPx = 60;
-constexpr uint16_t kFooterMetricTapWidthPx = 220;
-constexpr uint16_t kFooterMetricTapHeightPx = 32;
-constexpr uint16_t kBatteryBadgeTapWidthPx = 160;
-constexpr uint16_t kBatteryBadgeTapHeightPx = 40;
 constexpr uint16_t kFocusTimerCancelHoldMaxDriftPx = 20;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
 constexpr size_t kContextPreviewWindowWords = 288;
@@ -1451,17 +1445,16 @@ void App::updateWpmFeedback(uint32_t nowMs) {
 void App::resetReaderTapTracking() { lastReaderTapValid_ = false; }
 
 bool App::isFooterMetricTap(uint16_t x, uint16_t y) const {
-  return x >= BoardConfig::DISPLAY_WIDTH - kFooterMetricTapWidthPx &&
-         y >= BoardConfig::DISPLAY_HEIGHT - kFooterMetricTapHeightPx;
+  return touchgesture::isFooterMetricTap(x, y, BoardConfig::DISPLAY_WIDTH,
+                                         BoardConfig::DISPLAY_HEIGHT);
 }
 
 bool App::isBatteryBadgeTap(uint16_t x, uint16_t y) const {
-  return x >= BoardConfig::DISPLAY_WIDTH - kBatteryBadgeTapWidthPx &&
-         y <= kBatteryBadgeTapHeightPx;
+  return touchgesture::isBatteryBadgeTap(x, y, BoardConfig::DISPLAY_WIDTH);
 }
 
 bool App::isPreviousSentenceTap(uint16_t x, uint16_t y) const {
-  return x < kPreviousSentenceTapWidthPx && y < kPreviousSentenceTapHeightPx;
+  return touchgesture::isPreviousSentenceTap(x, y);
 }
 
 bool App::isActivelyReading() const { return state_ == AppState::Playing; }

@@ -80,6 +80,35 @@ void test_wpm_delta_direction() {
   TEST_ASSERT_EQUAL_INT(-1, touchgesture::wpmDeltaForDrag(0));
 }
 
+namespace {
+constexpr int kW = 640;  // device logical panel size
+constexpr int kH = 172;
+}  // namespace
+
+void test_footer_metric_tap_zone() {
+  // Bottom-right corner: x >= W-220 (=420) and y >= H-32 (=140).
+  TEST_ASSERT_TRUE(touchgesture::isFooterMetricTap(420, 140, kW, kH));   // corner of zone
+  TEST_ASSERT_TRUE(touchgesture::isFooterMetricTap(639, 171, kW, kH));   // far corner
+  TEST_ASSERT_FALSE(touchgesture::isFooterMetricTap(419, 140, kW, kH));  // just left
+  TEST_ASSERT_FALSE(touchgesture::isFooterMetricTap(420, 139, kW, kH));  // just above
+}
+
+void test_battery_badge_tap_zone() {
+  // Top-right: x >= W-160 (=480) and y <= 40.
+  TEST_ASSERT_TRUE(touchgesture::isBatteryBadgeTap(480, 40, kW));
+  TEST_ASSERT_TRUE(touchgesture::isBatteryBadgeTap(639, 0, kW));
+  TEST_ASSERT_FALSE(touchgesture::isBatteryBadgeTap(479, 40, kW));  // just left
+  TEST_ASSERT_FALSE(touchgesture::isBatteryBadgeTap(480, 41, kW));  // just below
+}
+
+void test_previous_sentence_tap_zone() {
+  // Top-left corner: x < 96 and y < 60.
+  TEST_ASSERT_TRUE(touchgesture::isPreviousSentenceTap(0, 0));
+  TEST_ASSERT_TRUE(touchgesture::isPreviousSentenceTap(95, 59));
+  TEST_ASSERT_FALSE(touchgesture::isPreviousSentenceTap(96, 59));  // at right edge (exclusive)
+  TEST_ASSERT_FALSE(touchgesture::isPreviousSentenceTap(95, 60));  // at bottom edge (exclusive)
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_is_tap_within_slop);
@@ -90,5 +119,8 @@ int main(void) {
   RUN_TEST(test_scrub_steps_for_drag);
   RUN_TEST(test_browse_scroll_rate);
   RUN_TEST(test_wpm_delta_direction);
+  RUN_TEST(test_footer_metric_tap_zone);
+  RUN_TEST(test_battery_badge_tap_zone);
+  RUN_TEST(test_previous_sentence_tap_zone);
   return UNITY_END();
 }

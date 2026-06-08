@@ -17,6 +17,14 @@ constexpr uint16_t kBrowseNeutralZonePx = 14;
 constexpr uint32_t kBrowseMinWordsPerSecondPermille = 4000;
 constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 
+// Reader tap-zone sizes (logical pixels).
+constexpr int kFooterMetricTapWidthPx = 220;
+constexpr int kFooterMetricTapHeightPx = 32;
+constexpr int kBatteryBadgeTapWidthPx = 160;
+constexpr int kBatteryBadgeTapHeightPx = 40;
+constexpr int kPreviousSentenceTapWidthPx = 96;
+constexpr int kPreviousSentenceTapHeightPx = 60;
+
 }  // namespace
 
 bool isTap(int absDeltaX, int absDeltaY) {
@@ -89,5 +97,18 @@ int browseScrollRatePermille(int y, int displayHeight) {
 }
 
 int wpmDeltaForDrag(int deltaY) { return (deltaY < 0) ? 1 : -1; }
+
+bool isFooterMetricTap(int x, int y, int displayWidth, int displayHeight) {
+  return x >= displayWidth - kFooterMetricTapWidthPx &&
+         y >= displayHeight - kFooterMetricTapHeightPx;
+}
+
+bool isBatteryBadgeTap(int x, int y, int displayWidth) {
+  return x >= displayWidth - kBatteryBadgeTapWidthPx && y <= kBatteryBadgeTapHeightPx;
+}
+
+bool isPreviousSentenceTap(int x, int y) {
+  return x < kPreviousSentenceTapWidthPx && y < kPreviousSentenceTapHeightPx;
+}
 
 }  // namespace touchgesture
