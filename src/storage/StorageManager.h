@@ -6,6 +6,7 @@
 
 #include "reader/BookContent.h"
 #include "storage/IndexedBookStore.h"
+#include "storage/SdCard.h"
 
 class StorageManager {
  public:
@@ -66,6 +67,7 @@ class StorageManager {
   void notifyStatus(const char *title, const char *line1 = "", const char *line2 = "",
                     int progressPercent = -1);
 
+  SdCard sdCard_;
   bool mounted_ = false;
   bool listedOnce_ = false;
   StatusCallback statusCallback_ = nullptr;

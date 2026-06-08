@@ -41,7 +41,6 @@ using booktext::trimAsciiWhitespace;
 
 namespace {
 
-constexpr const char *kMountPoint = "/sdcard";
 constexpr const char *kBooksPath = "/books";
 constexpr const char *kBookFilesPath = "/books/books";
 constexpr const char *kArticleFilesPath = "/books/articles";
@@ -52,61 +51,12 @@ constexpr size_t kInitialWordReserveMax = 50000;
 constexpr size_t kParseMemoryCheckWordInterval = 512;
 constexpr size_t kParseMinFreeHeapBytes = 32 * 1024;
 constexpr size_t kParseMinLargestHeapBlockBytes = 8 * 1024;
-constexpr int kSdFrequenciesKhz[] = {
-    SDMMC_FREQ_DEFAULT,
-    10000,
-    SDMMC_FREQ_PROBING,
-};
 
 
 
 bool parseMemoryLow() {
   return heap_caps_get_free_size(MALLOC_CAP_8BIT) < kParseMinFreeHeapBytes ||
          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kParseMinLargestHeapBlockBytes;
-}
-
-bool booksDirectoryExists() {
-  File dir = SD_MMC.open(kBooksPath);
-  const bool exists = dir && dir.isDirectory();
-  if (dir) {
-    dir.close();
-  }
-  return exists;
-}
-
-bool directoryExists(const char *path) {
-  File dir = SD_MMC.open(path);
-  const bool exists = dir && dir.isDirectory();
-  if (dir) {
-    dir.close();
-  }
-  return exists;
-}
-
-bool ensureDirectory(const char *path) {
-  if (directoryExists(path)) {
-    Serial.printf("[sd-check] directory exists: %s\n", path);
-    return true;
-  }
-  Serial.printf("[sd-check] creating directory: %s\n", path);
-  const bool mkdirOk = SD_MMC.mkdir(path);
-  const bool existsAfter = directoryExists(path);
-  Serial.printf("[sd-check] mkdir path=%s ok=%u existsAfter=%u\n", path, mkdirOk ? 1 : 0,
-                existsAfter ? 1 : 0);
-  return mkdirOk || existsAfter;
-}
-
-String cardTypeLabel(uint8_t cardType) {
-  switch (cardType) {
-    case CARD_MMC:
-      return "MMC";
-    case CARD_SD:
-      return "SDSC";
-    case CARD_SDHC:
-      return "SDHC/SDXC";
-    default:
-      return "Unknown";
-  }
 }
 
 bool hasTextExtension(const String &path) {
@@ -403,28 +353,6 @@ size_t countUnsupportedBookFiles() {
 
   return unsupported;
 }
-
-bool writeDiagnosticProbeFile(const char *directoryPath) {
-  String path = String(directoryPath);
-  if (!path.endsWith("/")) {
-    path += "/";
-  }
-  path += ".sdcheck.tmp";
-  Serial.printf("[sd-check] write probe path=%s\n", path.c_str());
-  SD_MMC.remove(path);
-  File file = SD_MMC.open(path, FILE_WRITE);
-  if (!file) {
-    Serial.printf("[sd-check] write probe open failed: %s\n", path.c_str());
-    return false;
-  }
-  const size_t written = file.print("rsvp-nano sd check\n");
-  file.close();
-  const bool removed = SD_MMC.remove(path);
-  Serial.printf("[sd-check] write probe result path=%s written=%u removed=%u\n",
-                path.c_str(), static_cast<unsigned int>(written), removed ? 1 : 0);
-  return written > 0 && removed;
-}
-
 
 struct RsvpDirectiveValues {
   String title;
@@ -818,32 +746,20 @@ bool StorageManager::begin() {
   listedOnce_ = false;
   clearBookCache();
 
-  if (!SD_MMC.setPins(BoardConfig::PIN_SD_CLK, BoardConfig::PIN_SD_CMD, BoardConfig::PIN_SD_D0)) {
-    Serial.println("[storage] SD_MMC pin setup failed");
+  mounted_ = sdCard_.mount(statusCallback_, statusContext_);
+  if (!mounted_) {
+    Serial.println("[storage] SD init failed after retries");
     return false;
   }
 
-  for (int frequencyKhz : kSdFrequenciesKhz) {
-    notifyStatus("SD", "Mounting card", "", 5);
-    Serial.printf("[storage] Trying SD_MMC mount at %d kHz\n", frequencyKhz);
-    SD_MMC.end();
-    mounted_ = SD_MMC.begin(kMountPoint, true, false, frequencyKhz, 5);
-    if (mounted_) {
-      const uint64_t sizeMb = SD_MMC.cardSize() / (1024ULL * 1024ULL);
-      Serial.printf("[storage] SD initialized (%llu MB) at %d kHz\n", sizeMb, frequencyKhz);
-      notifyStatus("SD", "Scanning books", "EPUB converts on open", 10);
-      refreshBookPaths(false);
-      return true;
-    }
-  }
-
-  Serial.println("[storage] SD init failed after retries");
-  return false;
+  notifyStatus("SD", "Scanning books", "EPUB converts on open", 10);
+  refreshBookPaths(false);
+  return true;
 }
 
 void StorageManager::end() {
   if (mounted_) {
-    SD_MMC.end();
+    sdCard_.unmount();
   }
   mounted_ = false;
   listedOnce_ = false;
@@ -856,7 +772,7 @@ void StorageManager::listBooks() {
   }
   listedOnce_ = true;
 
-  if (!booksDirectoryExists()) {
+  if (!sdCard_.directoryExists(kBooksPath)) {
     Serial.println("[storage] /books directory not found");
     return;
   }
@@ -1011,7 +927,7 @@ bool StorageManager::loadBookContent(size_t index, BookContent &book, String *lo
     return false;
   }
 
-  if (!booksDirectoryExists()) {
+  if (!sdCard_.directoryExists(kBooksPath)) {
     Serial.println("[storage] /books directory not found");
     return false;
   }
@@ -1510,7 +1426,7 @@ bool StorageManager::loadIndexedBook(size_t index, IndexedBookStore &store,
     return false;
   }
 
-  if (!booksDirectoryExists()) {
+  if (!sdCard_.directoryExists(kBooksPath)) {
     Serial.println("[storage] /books directory not found");
     notifyStatus("Book open failed", "Folders missing", "Run SD check", 100);
     return false;
@@ -1619,21 +1535,7 @@ StorageManager::DiagnosticResult StorageManager::diagnoseSdCard() {
   notifyStatus("SD check", "Mounting card", "", 5);
 
   if (!mounted_) {
-    if (!SD_MMC.setPins(BoardConfig::PIN_SD_CLK, BoardConfig::PIN_SD_CMD, BoardConfig::PIN_SD_D0)) {
-      result.summary = "Pin setup failed";
-      result.detail = "Check SD wiring";
-      Serial.println("[sd-check] SD_MMC pin setup failed");
-      return result;
-    }
-
-    for (int frequencyKhz : kSdFrequenciesKhz) {
-      Serial.printf("[sd-check] trying mount at %d kHz\n", frequencyKhz);
-      SD_MMC.end();
-      mounted_ = SD_MMC.begin(kMountPoint, true, false, frequencyKhz, 5);
-      if (mounted_) {
-        break;
-      }
-    }
+    mounted_ = sdCard_.mount();
   }
 
   result.mounted = mounted_;
@@ -1644,16 +1546,16 @@ StorageManager::DiagnosticResult StorageManager::diagnoseSdCard() {
     return result;
   }
 
-  result.sizeMb = SD_MMC.cardSize() / (1024ULL * 1024ULL);
-  result.cardType = cardTypeLabel(SD_MMC.cardType());
+  result.sizeMb = sdCard_.sizeMb();
+  result.cardType = sdCard_.typeLabel();
   Serial.printf("[sd-check] mounted type=%s size=%llu MB\n", result.cardType.c_str(),
                 result.sizeMb);
 
   notifyStatus("SD check", "Checking folders", "", 30);
-  result.booksDirectory = directoryExists(kBooksPath);
-  result.bookFilesDirectory = directoryExists(kBookFilesPath);
-  result.articleFilesDirectory = directoryExists(kArticleFilesPath);
-  result.configDirectory = directoryExists("/config");
+  result.booksDirectory = sdCard_.directoryExists(kBooksPath);
+  result.bookFilesDirectory = sdCard_.directoryExists(kBookFilesPath);
+  result.articleFilesDirectory = sdCard_.directoryExists(kArticleFilesPath);
+  result.configDirectory = sdCard_.directoryExists("/config");
   if (!result.booksDirectory || !result.bookFilesDirectory || !result.articleFilesDirectory ||
       !result.configDirectory) {
     result.summary = "Folders missing";
@@ -1673,10 +1575,10 @@ StorageManager::DiagnosticResult StorageManager::diagnoseSdCard() {
   result.unsupportedCount = countUnsupportedBookFiles();
 
   notifyStatus("SD check", "Testing write", "", 70);
-  result.writable = writeDiagnosticProbeFile(kBooksPath);
-  result.booksWritable = writeDiagnosticProbeFile(kBookFilesPath);
-  result.articlesWritable = writeDiagnosticProbeFile(kArticleFilesPath);
-  result.configWritable = writeDiagnosticProbeFile("/config");
+  result.writable = sdCard_.writeProbe(kBooksPath);
+  result.booksWritable = sdCard_.writeProbe(kBookFilesPath);
+  result.articlesWritable = sdCard_.writeProbe(kArticleFilesPath);
+  result.configWritable = sdCard_.writeProbe("/config");
   if (!result.writable) {
     result.summary = "Write test failed";
     result.detail = "Format FAT32 MBR";
@@ -1719,13 +1621,13 @@ bool StorageManager::repairSdCardFolders() {
   }
 
   Serial.println("[sd-check] repairing v0.0.4 folder layout");
-  const bool rootWritable = writeDiagnosticProbeFile("/");
+  const bool rootWritable = sdCard_.writeProbe("/");
   Serial.printf("[sd-check] root write probe=%u\n", rootWritable ? 1 : 0);
 
-  const bool booksOk = ensureDirectory(kBooksPath);
-  const bool bookFilesOk = booksOk && ensureDirectory(kBookFilesPath);
-  const bool articleFilesOk = booksOk && ensureDirectory(kArticleFilesPath);
-  const bool configOk = ensureDirectory("/config");
+  const bool booksOk = sdCard_.ensureDirectory(kBooksPath);
+  const bool bookFilesOk = booksOk && sdCard_.ensureDirectory(kBookFilesPath);
+  const bool articleFilesOk = booksOk && sdCard_.ensureDirectory(kArticleFilesPath);
+  const bool configOk = sdCard_.ensureDirectory("/config");
   const bool ok = rootWritable && booksOk && bookFilesOk && articleFilesOk && configOk;
   if (ok) {
     Serial.println("[sd-check] repaired v0.0.4 folder layout");
