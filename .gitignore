@@ -20,3 +20,13 @@ tools/*.rsvp
 web/firmware/*.bin
 .cache/
 compile_commands.json
+# LLM / AI tooling and notes — local only, never shared upstream
+/CONTEXT.md
+llm/
+.llm/
+.claude/
+CLAUDE.md
+.cursor/
+.cursorrules
+.aider*
+.continue/
