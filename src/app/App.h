@@ -10,6 +10,7 @@
 
 #include "app/AppState.h"
 #include "app/Localization.h"
+#include "app/Menu.h"
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
@@ -80,23 +81,10 @@ class App {
     Wpm,
   };
 
-  enum class MenuScreen {
-    Main,
-    SettingsHome,
-    SettingsDisplay,
-    SettingsPacing,
-    WifiSettings,
-    WifiNetworks,
-    TextEntry,
-    TypographyTuning,
-    BookPicker,
-    ChapterPicker,
-    RestartConfirm,
-    SdCardRepairConfirm,
-    UpdateConfirm,
-    FocusTimerGenres,
-    FocusTimerSession,
-  };
+  // Menu screens live in the pure `menu` module so the navigation logic is
+  // host-testable; this alias keeps every existing MenuScreen:: call site
+  // unchanged.
+  using MenuScreen = menu::Screen;
 
   enum class FooterMetricMode : uint8_t {
     Percentage = 0,
