@@ -6,8 +6,9 @@
 wifi_ssid=YourWiFiName
 wifi_password=YourWiFiPassword
 
-# Optional. Defaults point at the main RSVP Nano repo.
-# github_owner=ionutdecebal
+# Optional. This fork build defaults to the umar-b/rsvpnano releases.
+# Override here to point OTA at a different repo (e.g. the upstream project).
+# github_owner=umar-b
 # github_repo=rsvpnano
 # asset_name=rsvp-nano-ota.bin
 

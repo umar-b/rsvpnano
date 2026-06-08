@@ -10,7 +10,11 @@ class OtaUpdater {
   struct Config {
     String wifiSsid;
     String wifiPassword;
-    String githubOwner = "ionutdecebal";
+    // Fork build: OTA checks this fork's GitHub Releases by default. This is a
+    // fork-only default -- keep it out of any PR back to the upstream repo. The
+    // owner can still be overridden at runtime via /config/ota.conf or the
+    // on-device OTA owner setting (kPrefOtaOwner).
+    String githubOwner = "umar-b";
     String githubRepo = "rsvpnano";
     String assetName = "rsvp-nano-ota.bin";
     bool autoCheck = false;
