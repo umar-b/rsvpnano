@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
-  pages: write
 
 jobs:
   firmware:
@@ -75,14 +73,6 @@ jobs:
               --notes-file release-notes.md
           fi
 
-      - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload GitHub Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: web
-
-      - name: Deploy GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      # GitHub Pages (the web flasher) is deployed by pages.yml on the
+      # release:published event, so this workflow only builds and publishes the
+      # release assets -- including rsvp-nano-ota.bin, which OTA fetches.
