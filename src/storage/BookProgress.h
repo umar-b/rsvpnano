@@ -2,6 +2,10 @@
 
 #include <Arduino.h>
 
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
 class Preferences;
 
 // Per-book reading progress persisted in NVS, keyed by a hash of the book's
@@ -18,10 +22,28 @@ constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
 uint32_t hashPath(const String &path);
 
 // NVS keys for a book: "p<hash>" position, "c<hash>" word count, "r<hash>"
-// recent-sequence. Keys stay <= 15 chars for the NVS limit.
+// recent-sequence, "f<hash>" finished flag. Keys stay <= 15 chars for the NVS
+// limit.
 String positionKey(const String &path);
 String wordCountKey(const String &path);
 String recentKey(const String &path);
+String finishedKey(const String &path);
+// "k<hash>" -- the packed bookmark blob for a book (a sequence of word indices).
+String bookmarkKey(const String &path);
+
+// Maximum bookmarks kept per book. New marks past the cap drop the oldest.
+constexpr size_t kMaxBookmarks = 16;
+
+// Pure encode/decode for the packed bookmark blob: each word index is stored as
+// 4 little-endian bytes, in order. decodeBookmarks tolerates trailing partial
+// bytes (returns whole entries only) and caps the result at kMaxBookmarks.
+std::vector<uint8_t> encodeBookmarks(const std::vector<uint32_t> &wordIndices);
+std::vector<uint32_t> decodeBookmarks(const uint8_t *bytes, size_t length);
+
+// Insert a word index into a bookmark list: ignores exact duplicates, keeps the
+// list sorted ascending, and enforces kMaxBookmarks by dropping the entry
+// furthest (by word distance) from the inserted one. Returns true if it changed.
+bool insertBookmark(std::vector<uint32_t> &wordIndices, uint32_t wordIndex);
 
 // Resume progress as 0..100. Returns false when there isn't enough to show
 // (word count of 0 or 1).
@@ -52,6 +74,20 @@ class BookProgress {
   // with the next sequence and returns it.
   uint32_t markRecent(const String &path);
   uint32_t recentSequence(const String &path);
+
+  // Finished flag (orthogonal to saved position -- marking finished never
+  // resets the position, so re-reads resume where you were). setFinished(false)
+  // clears the flag.
+  void setFinished(const String &path, bool finished);
+  bool isFinished(const String &path);
+
+  // Bookmarks: bare word indices saved per book, independent of the resume
+  // position. Stored as one packed blob under the "k<hash>" key. The list stays
+  // sorted ascending and capped at kMaxBookmarks.
+  std::vector<uint32_t> bookmarks(const String &path);
+  bool addBookmark(const String &path, uint32_t wordIndex);     // false if no change
+  bool removeBookmark(const String &path, uint32_t wordIndex);  // false if absent
+  void clearBookmarks(const String &path);
 
  private:
   uint32_t nextSequence();

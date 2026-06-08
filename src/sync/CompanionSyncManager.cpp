@@ -188,9 +188,10 @@ function safeName(s){return (s||'article').replace(/[^a-z0-9._ -]+/gi,'-').repla
 function escRsvp(s){return (s||'').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim()}
 function articleFile(){const title=$('articleTitle').value.trim()||'Untitled Article';const author=$('articleAuthor').value.trim();const body=escRsvp($('articleBody').value);let out='@rsvp 1\n@title '+title+'\n';if(author)out+='@author '+author+'\n';out+='@para\n'+body+'\n';return {name:safeName(title)+'.rsvp',blob:new Blob([out],{type:'text/plain'})}}
 function html(s){return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-function renderList(id,items){$(id).innerHTML=items.length?items.map(b=>`<div class="item"><div class="item-title">${html(b.title||b.name)}</div><div class="item-meta">${html([b.author,b.name,bytes(b.bytes),b.progressPercent!=null?b.progressPercent+'% read':null].filter(Boolean).join(' - '))}</div><p><button class="danger" data-delete="${html(encodeURIComponent(b.name))}">Delete</button></p></div>`).join(''):'<span class="muted">Nothing here yet.</span>';document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>delBook(decodeURIComponent(b.dataset.delete)))}
+function renderList(id,items){$(id).innerHTML=items.length?items.map(b=>`<div class="item"><div class="item-title">${html(b.title||b.name)}${b.finished?' &#10003;':''}</div><div class="item-meta">${html([b.author,b.name,bytes(b.bytes),b.progressPercent!=null?b.progressPercent+'% read':null,b.finished?'finished':null].filter(Boolean).join(' - '))}</div><p><button data-finish="${html(encodeURIComponent(b.name))}" data-state="${b.finished?'1':'0'}">${b.finished?'Mark unread':'Mark finished'}</button> <button class="danger" data-delete="${html(encodeURIComponent(b.name))}">Delete</button></p></div>`).join(''):'<span class="muted">Nothing here yet.</span>';document.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>delBook(decodeURIComponent(b.dataset.delete)));document.querySelectorAll('[data-finish]').forEach(b=>b.onclick=()=>toggleFinished(decodeURIComponent(b.dataset.finish),b.dataset.state!=='1'))}
 async function refresh(){try{const info=await api('/api/info');$('infoBox').innerHTML=`${info.name}<br><span class="muted">${info.mode} - ${info.networkSsid||''}</span><br>Pairing code: <strong>${info.pairingCode}</strong>`;const data=await api('/api/books');renderList('booksList',data.books.filter(b=>b.category!=='article'&&!String(b.name).startsWith('articles/')));renderList('articlesList',data.books.filter(b=>b.category==='article'||String(b.name).startsWith('articles/')));status('Connected to RSVP Nano.')}catch(e){status('Connection problem: '+e.message)}}
 async function delBook(name){if(!confirm('Delete '+name+'?'))return;try{await api('/api/books?name='+encodeURIComponent(name),{method:'DELETE'});await refresh();status('Deleted '+name)}catch(e){status('Delete failed: '+e.message)}}
+async function toggleFinished(name,finished){try{await api('/api/books/finished?name='+encodeURIComponent(name)+'&finished='+(finished?'true':'false'),{method:'POST'});await refresh();status((finished?'Marked finished: ':'Marked unread: ')+name)}catch(e){status('Update failed: '+e.message)}}
 async function uploadBlob(blob,name,category){const fd=new FormData();fd.append('file',blob,name);await api('/api/books?name='+encodeURIComponent(name)+'&category='+encodeURIComponent(category),{method:'POST',body:fd})}
 async function uploadPicked(inputId,category){const f=$(inputId).files[0];if(!f){status('Choose a file first.');return}try{await uploadBlob(f,f.name,category);$(inputId).value='';await refresh();status('Uploaded '+f.name)}catch(e){status('Upload failed: '+e.message)}}
 async function syncArticle(){const f=articleFile();if(!$('articleBody').value.trim()){status('Paste article text first.');return}try{await uploadBlob(f.blob,f.name,'article');localStorage.removeItem('rsvpArticleDraft');await refresh();status('Synced '+f.name)}catch(e){status('Article sync failed: '+e.message)}}
@@ -617,6 +618,24 @@ void CompanionSyncManager::handleBookDeleteStatic() {
   }
 }
 
+void CompanionSyncManager::handleBookFinishedStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleBookFinished();
+  }
+}
+
+void CompanionSyncManager::handleBookmarksStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleBookmarks();
+  }
+}
+
+void CompanionSyncManager::handleStatsStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleStats();
+  }
+}
+
 void CompanionSyncManager::handleBooksStatic() {
   if (instance_ != nullptr) {
     instance_->handleBooks();
@@ -657,6 +676,11 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books", HTTP_GET, handleBooksListStatic);
   server_.on("/api/books", HTTP_DELETE, handleBookDeleteStatic);
   server_.on("/api/books", HTTP_POST, handleBooksStatic, handleBookUploadStatic);
+  server_.on("/api/books/finished", HTTP_POST, handleBookFinishedStatic);
+  server_.on("/api/books/bookmarks", HTTP_GET, handleBookmarksStatic);
+  server_.on("/api/books/bookmarks", HTTP_POST, handleBookmarksStatic);
+  server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
+  server_.on("/api/stats", HTTP_GET, handleStatsStatic);
   server_.on("/api/settings", HTTP_GET, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PATCH, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PUT, handleSettingsStatic);
@@ -736,7 +760,17 @@ void CompanionSyncManager::handleBooksList() {
           if (hasProgress) {
             body += ",\"progressPercent\":" + String(progressPercent);
           }
-          body += "}";
+          body += ",\"finished\":";
+          body += bookProgress_.isFinished(path) ? "true" : "false";
+          body += ",\"bookmarks\":[";
+          const std::vector<uint32_t> marks = bookProgress_.bookmarks(path);
+          for (size_t m = 0; m < marks.size(); ++m) {
+            if (m != 0) {
+              body += ",";
+            }
+            body += String(static_cast<uint32_t>(marks[m]));
+          }
+          body += "]}";
         }
       }
       entry.close();
@@ -835,36 +869,37 @@ void CompanionSyncManager::handleBooks() {
   uploadFinalPath_ = "";
 }
 
-void CompanionSyncManager::handleBookDelete() {
-  String requested = server_.arg("name");
-  requested.trim();
-  if (requested.isEmpty()) {
-    server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing filename\"}");
-    return;
+bool CompanionSyncManager::resolveRequestedBook(const String &requested, String &filenameOut,
+                                                String &pathOut, String &error) {
+  String trimmed = requested;
+  trimmed.trim();
+  if (trimmed.isEmpty()) {
+    error = "Missing filename";
+    return false;
   }
 
-  String filename = requested;
+  String filename = trimmed;
   String path;
-  const int separator = requested.indexOf('/');
+  const int separator = trimmed.indexOf('/');
   if (separator >= 0) {
-    const String directory = requested.substring(0, separator);
-    filename = sanitizeFilename(requested.substring(separator + 1));
-    if (filename.isEmpty() || requested.indexOf("..") >= 0 ||
+    const String directory = trimmed.substring(0, separator);
+    filename = sanitizeFilename(trimmed.substring(separator + 1));
+    if (filename.isEmpty() || trimmed.indexOf("..") >= 0 ||
         (directory != "books" && directory != "articles")) {
-      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Invalid library path\"}");
-      return;
+      error = "Invalid library path";
+      return false;
     }
     path = String(kBooksPath) + "/" + directory + "/" + filename;
   } else {
-    filename = sanitizeFilename(requested);
+    filename = sanitizeFilename(trimmed);
     path = String(kBooksPath) + "/" + filename;
   }
 
   String lowered = filename;
   lowered.toLowerCase();
   if (!isSupportedBookName(lowered)) {
-    server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Unsupported file type\"}");
-    return;
+    error = "Unsupported file type";
+    return false;
   }
 
   File file = SD_MMC.open(path);
@@ -886,10 +921,26 @@ void CompanionSyncManager::handleBookDelete() {
     if (file) {
       file.close();
     }
-    server_.send(404, "application/json", "{\"ok\":false,\"error\":\"Book not found\"}");
-    return;
+    error = "Book not found";
+    return false;
   }
   file.close();
+
+  filenameOut = filename;
+  pathOut = path;
+  return true;
+}
+
+void CompanionSyncManager::handleBookDelete() {
+  String filename;
+  String path;
+  String error;
+  if (!resolveRequestedBook(server_.arg("name"), filename, path, error)) {
+    const int status = (error == "Book not found") ? 404 : 400;
+    server_.send(status, "application/json",
+                 String("{\"ok\":false,\"error\":\"") + error + "\"}");
+    return;
+  }
 
   if (!SD_MMC.remove(path)) {
     server_.send(500, "application/json", "{\"ok\":false,\"error\":\"Delete failed\"}");
@@ -901,6 +952,122 @@ void CompanionSyncManager::handleBookDelete() {
   Serial.printf("[sync] deleted %s\n", path.c_str());
   server_.send(200, "application/json",
                String("{\"ok\":true,\"path\":\"") + jsonEscape(path) + "\"}");
+}
+
+void CompanionSyncManager::handleBookFinished() {
+  String filename;
+  String path;
+  String error;
+  if (!resolveRequestedBook(server_.arg("name"), filename, path, error)) {
+    const int status = (error == "Book not found") ? 404 : 400;
+    server_.send(status, "application/json",
+                 String("{\"ok\":false,\"error\":\"") + error + "\"}");
+    return;
+  }
+
+  // "finished" arg controls the target state; absent/"toggle" flips it.
+  const String requested = server_.arg("finished");
+  bool finished;
+  if (requested == "true" || requested == "1") {
+    finished = true;
+  } else if (requested == "false" || requested == "0") {
+    finished = false;
+  } else {
+    finished = !bookProgress_.isFinished(path);
+  }
+
+  bookProgress_.setFinished(path, finished);
+  Serial.printf("[sync] book %s marked %s\n", path.c_str(), finished ? "finished" : "unread");
+  server_.send(200, "application/json",
+               String("{\"ok\":true,\"finished\":") + (finished ? "true" : "false") + "}");
+}
+
+void CompanionSyncManager::handleBookmarks() {
+  String filename;
+  String path;
+  String error;
+  if (!resolveRequestedBook(server_.arg("name"), filename, path, error)) {
+    const int status = (error == "Book not found") ? 404 : 400;
+    server_.send(status, "application/json",
+                 String("{\"ok\":false,\"error\":\"") + error + "\"}");
+    return;
+  }
+
+  const HTTPMethod method = server_.method();
+  if (method == HTTP_POST || method == HTTP_DELETE) {
+    const String wordArg = server_.arg("word");
+    if (wordArg.isEmpty()) {
+      server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing word\"}");
+      return;
+    }
+    const uint32_t wordIndex = static_cast<uint32_t>(strtoul(wordArg.c_str(), nullptr, 10));
+    if (method == HTTP_POST) {
+      bookProgress_.addBookmark(path, wordIndex);
+      Serial.printf("[sync] bookmark add word=%u %s\n", static_cast<unsigned int>(wordIndex),
+                    path.c_str());
+    } else {
+      bookProgress_.removeBookmark(path, wordIndex);
+      Serial.printf("[sync] bookmark remove word=%u %s\n", static_cast<unsigned int>(wordIndex),
+                    path.c_str());
+    }
+  }
+
+  String body = "{\"ok\":true,\"bookmarks\":[";
+  const std::vector<uint32_t> marks = bookProgress_.bookmarks(path);
+  for (size_t i = 0; i < marks.size(); ++i) {
+    if (i != 0) {
+      body += ",";
+    }
+    body += String(static_cast<uint32_t>(marks[i]));
+  }
+  body += "]}";
+  server_.send(200, "application/json", body);
+}
+
+void CompanionSyncManager::handleStats() {
+  // Read-only view of the all-time totals mirrored into NVS by the device's
+  // stats persistence (the authoritative store is an SD JSON file). With no RTC
+  // on this device, totals are session-bucketed actuals, not calendar days.
+  const uint64_t totalWords = preferences_.getULong64(kPrefStatsWords, 0);
+  const uint64_t totalMs = preferences_.getULong64(kPrefStatsMs, 0);
+  const uint32_t avgWpm =
+      totalMs >= 1000 ? static_cast<uint32_t>((totalWords * 60000ULL) / totalMs) : 0;
+
+  size_t finished = 0;
+  const auto countFinished = [&](const char *directoryPath) {
+    File dir = SD_MMC.open(directoryPath);
+    if (!dir || !dir.isDirectory()) {
+      if (dir) {
+        dir.close();
+      }
+      return;
+    }
+    File entry = dir.openNextFile();
+    while (entry) {
+      if (!entry.isDirectory()) {
+        const String name = displayNameForPath(String(entry.name()));
+        const String path = String(directoryPath) + "/" + name;
+        String lowered = name;
+        lowered.toLowerCase();
+        if (isSupportedBookName(lowered) && bookProgress_.isFinished(path)) {
+          ++finished;
+        }
+      }
+      entry.close();
+      entry = dir.openNextFile();
+    }
+    dir.close();
+  };
+  countFinished(kBooksPath);
+  countFinished(kBookFilesPath);
+  countFinished(kArticleFilesPath);
+
+  String body = "{\"totalWords\":" + String(static_cast<uint32_t>(totalWords)) +
+                ",\"totalMs\":" + String(static_cast<uint32_t>(totalMs)) +
+                ",\"averageWpm\":" + String(avgWpm) +
+                ",\"booksFinished\":" + String(static_cast<uint32_t>(finished)) +
+                ",\"clock\":\"session\"}";
+  server_.send(200, "application/json", body);
 }
 
 void CompanionSyncManager::handleBookUpload() {
