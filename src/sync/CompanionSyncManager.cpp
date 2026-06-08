@@ -1061,6 +1061,8 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"phantomWords\":" +
           String(preferences_.getBool(kPrefPhantomWords, true) ? "true" : "false");
   body += ",\"fontSizeIndex\":" + String(fontSize);
+  body += ",\"idleStandbyMinutes\":" +
+          String(preferences_.getUChar(kPrefIdleStandbyMin, 0));
   body += "}";
   body += ",\"typography\":{";
   body += "\"typeface\":\"";
@@ -1213,6 +1215,14 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
       return false;
     }
     preferences_.putUChar(kPrefReaderFontSize, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonInt(body, "idleStandbyMinutes", intValue)) {
+    if (intValue != 0 && intValue != 1 && intValue != 2 && intValue != 5 &&
+        intValue != 10 && intValue != 15) {
+      error = "idleStandbyMinutes must be 0, 1, 2, 5, 10, or 15";
+      return false;
+    }
+    preferences_.putUChar(kPrefIdleStandbyMin, static_cast<uint8_t>(intValue));
   }
   if (readJsonString(body, "typeface", stringValue)) {
     const int value = enumValue(stringValue, typefaceLabels, 3);

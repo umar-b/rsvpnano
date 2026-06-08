@@ -26,6 +26,7 @@ constexpr const char *kPrefPhantomWords = "phantom_on";
 constexpr const char *kPrefFooterMetricMode = "prog_md";
 constexpr const char *kPrefBatteryLabelMode = "bat_md";
 constexpr const char *kPrefScreensaverMode = "scrn_sv";
+constexpr const char *kPrefIdleStandbyMin = "idle_sby";
 constexpr const char *kPrefReaderBatteryVisible = "read_bat";
 constexpr const char *kPrefReaderChapterVisible = "read_ch";
 constexpr const char *kPrefReaderProgressVisible = "read_pct";

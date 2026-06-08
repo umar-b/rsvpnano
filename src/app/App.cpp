@@ -140,10 +140,11 @@ constexpr size_t kSettingsDisplayHandednessIndex = 3;
 constexpr size_t kSettingsDisplayFooterIndex = 4;
 constexpr size_t kSettingsDisplayBatteryIndex = 5;
 constexpr size_t kSettingsDisplayScreensaverIndex = 6;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 7;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 8;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 9;
-constexpr size_t kSettingsDisplayLanguageIndex = 10;
+constexpr size_t kSettingsDisplayIdleStandbyIndex = 7;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 8;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 9;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 10;
+constexpr size_t kSettingsDisplayLanguageIndex = 11;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -450,6 +451,7 @@ void App::begin() {
       preferences_.getBool(kPrefReaderChapterVisible, readerChapterVisibleWhilePlaying_);
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
+  idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -542,6 +544,7 @@ void App::begin() {
   applyTypographySettings(0, false);
   applyPacingSettings();
   bootStartedMs_ = millis();
+  lastInputMs_ = bootStartedMs_;
   lastStateLogMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
   Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
@@ -603,6 +606,11 @@ void App::begin() {
 void App::update(uint32_t nowMs) {
   button_.update(nowMs);
   powerButton_.update(nowMs);
+  if (button_.isHeld() || powerButton_.isHeld() || button_.wasPressedEvent() ||
+      powerButton_.wasPressedEvent() || button_.wasReleasedEvent() ||
+      powerButton_.wasReleasedEvent()) {
+    noteUserInput(nowMs);
+  }
   const bool standbyComboConsumed = handleStandbyCombo(nowMs);
   if (!standbyComboConsumed) {
     handleBootButton(nowMs);
@@ -652,6 +660,10 @@ void App::update(uint32_t nowMs) {
   updateWpmFeedback(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
+  maybeAutoStandby(nowMs);
+  if (state_ == AppState::Standby) {
+    return;
+  }
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
     renderActiveReader(nowMs);
@@ -1114,6 +1126,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       preferences_.getBool(kPrefReaderChapterVisible, readerChapterVisibleWhilePlaying_);
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
+  idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -1680,6 +1693,7 @@ void App::handleTouch(uint32_t nowMs) {
     return;
   }
 
+  noteUserInput(nowMs);
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
                 stateName(state_));
@@ -2459,6 +2473,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayIdleStandbyIndex:
+        cycleIdleStandbyTimeout();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       case kSettingsDisplayReaderBatteryIndex:
         readerBatteryVisibleWhilePlaying_ = !readerBatteryVisibleWhilePlaying_;
         preferences_.putBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
@@ -3084,6 +3103,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Footer label: " + footerMetricModeLabel());
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
+    settingsMenuItems_.push_back("Idle standby: " + idleStandbyLabel());
     settingsMenuItems_.push_back("Reading battery: " +
                                  onOffLabel(readerBatteryVisibleWhilePlaying_));
     settingsMenuItems_.push_back("Reading chapter: " +
@@ -3988,6 +4008,58 @@ void App::exitStandby(uint32_t nowMs) {
     standbyScreenOffActive_ = false;
   }
   setState(nextState, nowMs);
+}
+
+void App::noteUserInput(uint32_t nowMs) { lastInputMs_ = nowMs; }
+
+void App::maybeAutoStandby(uint32_t nowMs) {
+  if (idleStandbyMinutes_ == 0) {
+    return;
+  }
+  // Only idle-in-Paused triggers auto-standby (decision 2: Playing means active
+  // reading; other states drive their own input/timeouts).
+  if (state_ != AppState::Paused) {
+    return;
+  }
+  const uint32_t idleLimitMs = static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL;
+  if (nowMs - lastInputMs_ >= idleLimitMs) {
+    Serial.printf("[app] idle %u min -> auto standby\n",
+                  static_cast<unsigned int>(idleStandbyMinutes_));
+    enterStandby(nowMs);
+  }
+}
+
+void App::cycleIdleStandbyTimeout() {
+  // Off -> 1 -> 2 -> 5 -> 10 -> 15 -> Off (minutes).
+  switch (idleStandbyMinutes_) {
+    case 0:
+      idleStandbyMinutes_ = 1;
+      break;
+    case 1:
+      idleStandbyMinutes_ = 2;
+      break;
+    case 2:
+      idleStandbyMinutes_ = 5;
+      break;
+    case 5:
+      idleStandbyMinutes_ = 10;
+      break;
+    case 10:
+      idleStandbyMinutes_ = 15;
+      break;
+    default:
+      idleStandbyMinutes_ = 0;
+      break;
+  }
+  preferences_.putUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  lastInputMs_ = millis();
+}
+
+String App::idleStandbyLabel() const {
+  if (idleStandbyMinutes_ == 0) {
+    return "Off";
+  }
+  return String(idleStandbyMinutes_) + " min";
 }
 
 uint32_t App::standbyRngSeed(uint32_t nowMs) const {

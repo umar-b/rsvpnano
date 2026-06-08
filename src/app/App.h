@@ -286,6 +286,10 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void enterStandby(uint32_t nowMs);
   void exitStandby(uint32_t nowMs);
+  void noteUserInput(uint32_t nowMs);
+  void maybeAutoStandby(uint32_t nowMs);
+  void cycleIdleStandbyTimeout();
+  String idleStandbyLabel() const;
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   uint32_t standbyRngSeed(uint32_t nowMs) const;
@@ -408,6 +412,7 @@ class App {
   uint32_t lastScrollAnimationRenderMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
+  uint32_t lastInputMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
   uint32_t lastStandbyFrameMs_ = 0;
@@ -431,6 +436,7 @@ class App {
   size_t focusTimerGenreSelectedIndex_ = 0;
   uint8_t brightnessLevelIndex_ = 4;
   uint8_t readerFontSizeIndex_ = 0;
+  uint8_t idleStandbyMinutes_ = 0;  // 0 = off (preserves prior behaviour)
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;
   uint16_t pacingPunctuationDelayMs_ = 200;
