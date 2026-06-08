@@ -270,6 +270,7 @@ class App {
   void selectBookPickerItem(uint32_t nowMs);
   void openChapterPicker();
   void selectChapterPickerItem(uint32_t nowMs);
+  void toggleCurrentBookFinished(uint32_t nowMs);
   void openRestartConfirm();
   void selectRestartConfirmItem(uint32_t nowMs);
   void openSdCardRepairConfirm();

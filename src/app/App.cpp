@@ -62,6 +62,7 @@ namespace {
 enum MenuItem : size_t {
   MenuResume,
   MenuChapters,
+  MenuMarkFinished,
   MenuBooks,
   MenuArticles,
   MenuFocusTimer,
@@ -2315,6 +2316,9 @@ void App::selectMenuItem(uint32_t nowMs) {
     case MenuChapters:
       openChapterPicker();
       return;
+    case MenuMarkFinished:
+      toggleCurrentBookFinished(nowMs);
+      return;
     case MenuBooks:
       openBookPicker(false);
       return;
@@ -3613,6 +3617,26 @@ void App::selectBookPickerItem(uint32_t nowMs) {
   saveReadingPosition(true);
 }
 
+void App::toggleCurrentBookFinished(uint32_t nowMs) {
+  if (!usingStorageBook_ || currentBookPath_.isEmpty()) {
+    display_.renderStatus("Mark finished", "No book open", "");
+    delay(1200);
+    renderMainMenu();
+    return;
+  }
+
+  const bool nowFinished = !bookProgress_.isFinished(currentBookPath_);
+  // Finished is orthogonal to the saved position -- we never reset position here,
+  // so re-reads still resume where the reader left off.
+  bookProgress_.setFinished(currentBookPath_, nowFinished);
+  Serial.printf("[app] book %s marked %s\n", currentBookPath_.c_str(),
+                nowFinished ? "finished" : "unread");
+  display_.renderStatus("Mark finished", currentBookTitle_.c_str(),
+                        nowFinished ? "Marked finished" : "Marked unread");
+  delay(1200);
+  renderMainMenu();
+}
+
 void App::openChapterPicker() {
   chapterMenuItems_.clear();
   chapterMenuItems_.push_back(uiText(UiText::Back));
@@ -4268,6 +4292,12 @@ void App::saveReadingPosition(bool force) {
                              static_cast<uint32_t>(reader_.wordCount()));
   preferences_.putUShort(kPrefWpm, reader_.wpm());
   bookProgress_.markRecent(currentBookPath_);
+  // Optional auto-finish: when the reader reaches the end of the book, set the
+  // finished flag. This never clears it on scrub-back -- explicit unmark only.
+  if (reader_.atEnd() && !bookProgress_.isFinished(currentBookPath_)) {
+    bookProgress_.setFinished(currentBookPath_, true);
+    Serial.printf("[app] auto-marked finished book=%s\n", currentBookPath_.c_str());
+  }
   lastSavedWordIndex_ = wordIndex;
   Serial.printf("[app] saved position word=%u book=%s\n", static_cast<unsigned int>(wordIndex),
                 currentBookPath_.c_str());
@@ -4395,6 +4425,9 @@ void App::renderMainMenu() {
   items.reserve(MenuItemCount);
   items.push_back(uiText(UiText::Resume));
   items.push_back(uiText(UiText::Chapters));
+  const bool finished =
+      usingStorageBook_ && !currentBookPath_.isEmpty() && bookProgress_.isFinished(currentBookPath_);
+  items.push_back(finished ? "Mark unread" : "Mark finished");
   items.push_back("Books");
   items.push_back("Articles");
   items.push_back("Focus Timer");
@@ -4615,6 +4648,7 @@ DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
   DisplayManager::LibraryItem item;
   item.title = storage_.bookDisplayName(bookIndex);
   item.subtitle = storage_.bookAuthorName(bookIndex);
+  item.finished = bookProgress_.isFinished(storage_.bookPath(bookIndex));
 
   uint8_t percent = 0;
   const bool hasProgress = bookProgressPercent(bookIndex, percent);

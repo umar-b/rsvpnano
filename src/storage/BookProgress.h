@@ -18,10 +18,12 @@ constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
 uint32_t hashPath(const String &path);
 
 // NVS keys for a book: "p<hash>" position, "c<hash>" word count, "r<hash>"
-// recent-sequence. Keys stay <= 15 chars for the NVS limit.
+// recent-sequence, "f<hash>" finished flag. Keys stay <= 15 chars for the NVS
+// limit.
 String positionKey(const String &path);
 String wordCountKey(const String &path);
 String recentKey(const String &path);
+String finishedKey(const String &path);
 
 // Resume progress as 0..100. Returns false when there isn't enough to show
 // (word count of 0 or 1).
@@ -52,6 +54,12 @@ class BookProgress {
   // with the next sequence and returns it.
   uint32_t markRecent(const String &path);
   uint32_t recentSequence(const String &path);
+
+  // Finished flag (orthogonal to saved position -- marking finished never
+  // resets the position, so re-reads resume where you were). setFinished(false)
+  // clears the flag.
+  void setFinished(const String &path, bool finished);
+  bool isFinished(const String &path);
 
  private:
   uint32_t nextSequence();

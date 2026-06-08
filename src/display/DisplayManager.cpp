@@ -2743,6 +2743,7 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
     renderKey += item.title;
     renderKey += "~";
     renderKey += item.subtitle;
+    renderKey += item.finished ? "~f" : "~";
   }
 
   if (!initialized_ || renderKey == lastRenderKey_) {
@@ -2782,6 +2783,15 @@ void DisplayManager::renderLibrary(const std::vector<LibraryItem> &items, size_t
 
     if (selected) {
       fillVirtualRect(10, rowY + 3, 5, kLibraryRowHeight - 6, selectedBarColor());
+    }
+
+    if (item.finished) {
+      // Finished badge: a small filled dot in the right margin (the row leaves
+      // 16px of right gutter past maxWidth). No new font work.
+      const int dotSize = 6;
+      const int dotX = virtualWidth - 13;
+      const int dotY = rowY + (kLibraryRowHeight - dotSize) / 2;
+      fillVirtualRect(dotX, dotY, dotSize, dotSize, titleColor);
     }
 
     const String title = fitTinyText(item.title, maxWidth, kTinyScale);

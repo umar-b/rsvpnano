@@ -41,6 +41,7 @@ class CompanionSyncManager {
   static void handleWifiStatic();
   static void handleRssFeedsStatic();
   static void handleBookDeleteStatic();
+  static void handleBookFinishedStatic();
   static void handleBooksStatic();
   static void handleBookUploadStatic();
   static void handleNotFoundStatic();
@@ -55,6 +56,9 @@ class CompanionSyncManager {
   void handleWifi();
   void handleRssFeeds();
   void handleBookDelete();
+  void handleBookFinished();
+  bool resolveRequestedBook(const String &requested, String &filenameOut, String &pathOut,
+                            String &error);
   void handleBooks();
   void handleBookUpload();
   void handleNotFound();

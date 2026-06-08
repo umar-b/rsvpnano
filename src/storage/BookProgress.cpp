@@ -66,3 +66,23 @@ uint32_t BookProgress::markRecent(const String &path) {
 uint32_t BookProgress::recentSequence(const String &path) {
   return prefs_.getUInt(bookprogress::recentKey(path).c_str(), 0);
 }
+
+void BookProgress::setFinished(const String &path, bool finished) {
+  if (path.isEmpty()) {
+    return;
+  }
+  const String key = bookprogress::finishedKey(path);
+  if (finished) {
+    prefs_.putBool(key.c_str(), true);
+  } else if (prefs_.isKey(key.c_str())) {
+    prefs_.remove(key.c_str());
+  }
+}
+
+bool BookProgress::isFinished(const String &path) {
+  const String key = bookprogress::finishedKey(path);
+  if (!prefs_.isKey(key.c_str())) {
+    return false;
+  }
+  return prefs_.getBool(key.c_str(), false);
+}

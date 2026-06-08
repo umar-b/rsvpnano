@@ -44,6 +44,11 @@ class DisplayManager {
   struct LibraryItem {
     String title;
     String subtitle;
+    // No default member initializer: LibraryItem is brace-initialized
+    // (e.g. `{title, ""}`) and under gnu++11 an NSDMI would make it a
+    // non-aggregate, breaking those call sites. Aggregate init value-
+    // initializes this to false when omitted.
+    bool finished;
   };
 
   struct Button {

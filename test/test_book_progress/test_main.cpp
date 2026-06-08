@@ -14,14 +14,25 @@ void test_key_format_and_prefixes() {
   const String pos = bookprogress::positionKey(path);
   const String cnt = bookprogress::wordCountKey(path);
   const String rec = bookprogress::recentKey(path);
+  const String fin = bookprogress::finishedKey(path);
   // "x" + 8 hex chars = 9, within the 15-char NVS limit.
   TEST_ASSERT_EQUAL_UINT32(9, pos.length());
+  TEST_ASSERT_EQUAL_UINT32(9, fin.length());
   TEST_ASSERT_EQUAL('p', pos[0]);
   TEST_ASSERT_EQUAL('c', cnt[0]);
   TEST_ASSERT_EQUAL('r', rec[0]);
-  // Same path -> same 8-hex suffix across the three keys.
+  TEST_ASSERT_EQUAL('f', fin[0]);
+  // Same path -> same 8-hex suffix across the keys.
   TEST_ASSERT_EQUAL_STRING(pos.substring(1).c_str(), cnt.substring(1).c_str());
   TEST_ASSERT_EQUAL_STRING(pos.substring(1).c_str(), rec.substring(1).c_str());
+  TEST_ASSERT_EQUAL_STRING(pos.substring(1).c_str(), fin.substring(1).c_str());
+}
+
+void test_finished_key_distinct_from_other_prefixes() {
+  const String path = "/books/books/moby.rsvp";
+  TEST_ASSERT_TRUE(bookprogress::finishedKey(path) != bookprogress::positionKey(path));
+  TEST_ASSERT_TRUE(bookprogress::finishedKey(path) != bookprogress::recentKey(path));
+  TEST_ASSERT_TRUE(bookprogress::finishedKey("/a.rsvp") != bookprogress::finishedKey("/b.rsvp"));
 }
 
 void test_distinct_paths_yield_distinct_keys() {
@@ -56,6 +67,7 @@ int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_hash_is_deterministic_and_path_sensitive);
   RUN_TEST(test_key_format_and_prefixes);
+  RUN_TEST(test_finished_key_distinct_from_other_prefixes);
   RUN_TEST(test_distinct_paths_yield_distinct_keys);
   RUN_TEST(test_progress_percent_math);
   RUN_TEST(test_progress_percent_clamps_overshoot);

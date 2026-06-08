@@ -26,6 +26,7 @@ String keyWithPrefix(char prefix, const String &path) {
 String positionKey(const String &path) { return keyWithPrefix('p', path); }
 String wordCountKey(const String &path) { return keyWithPrefix('c', path); }
 String recentKey(const String &path) { return keyWithPrefix('r', path); }
+String finishedKey(const String &path) { return keyWithPrefix('f', path); }
 
 bool progressPercent(uint32_t wordIndex, uint32_t wordCount, uint8_t &percent) {
   if (wordCount <= 1) {
