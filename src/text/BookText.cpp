@@ -1,10 +1,22 @@
 #include "text/BookText.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "text/LatinText.h"
 
+#ifndef RSVP_MAX_BOOK_WORDS
+#define RSVP_MAX_BOOK_WORDS 0
+#endif
+
 namespace booktext {
+
+namespace {
+constexpr size_t kMaxBookWordsLimit = static_cast<size_t>(RSVP_MAX_BOOK_WORDS);
+constexpr size_t kMaxChapterTitleChars = 64;
+constexpr size_t kParseMemoryCheckWordInterval = 512;
+}  // namespace
+
 namespace {
 
 bool isUtf8Continuation(uint8_t value) { return (value & 0xC0) == 0x80; }
@@ -759,5 +771,296 @@ String normalizeDisplayText(const String &text, ParseStats *stats) {
   return collapsed;
 }
 
+bool hasBookWordLimit() { return kMaxBookWordsLimit > 0; }
+
+bool reachedBookWordLimit(size_t wordCount) {
+  return hasBookWordLimit() && wordCount >= kMaxBookWordsLimit;
+}
+
+namespace {
+bool isAsciiTrimWhitespace(char c) {
+  switch (c) {
+    case ' ':
+    case '\t':
+    case '\n':
+    case '\r':
+    case '\f':
+    case '\v':
+      return true;
+    default:
+      return false;
+  }
+}
+}  // namespace
+
+void trimAsciiWhitespace(String &text) {
+  size_t start = 0;
+  while (start < text.length() && isAsciiTrimWhitespace(text[start])) {
+    ++start;
+  }
+
+  size_t end = text.length();
+  while (end > start && isAsciiTrimWhitespace(text[end - 1])) {
+    --end;
+  }
+
+  if (end < text.length()) {
+    text.remove(end);
+  }
+  if (start > 0) {
+    text.remove(0, start);
+  }
+}
+
+bool isWordBoundary(char c) {
+  const uint8_t value = LatinText::byteValue(c);
+  return value <= ' ' && !LatinText::isWordCharacter(value) &&
+         !LatinText::isLowCustomSlotByte(value);
+}
+
+bool isReadableTokenChar(char c) {
+  return LatinText::isWordCharacter(LatinText::byteValue(c));
+}
+
+bool isInlineWordHyphen(const String &text, size_t index) {
+  if (index == 0 || index + 1 >= text.length() || text[index] != '-') {
+    return false;
+  }
+  if (text[index - 1] == '-' || text[index + 1] == '-') {
+    return false;
+  }
+  return isReadableTokenChar(text[index - 1]) && isReadableTokenChar(text[index + 1]);
+}
+
+bool tokenHasReadableCharacter(const String &token) {
+  for (size_t i = 0; i < token.length(); ++i) {
+    if (isReadableTokenChar(token[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool isHyphenToken(const String &token) {
+  if (token.isEmpty()) {
+    return false;
+  }
+  for (size_t i = 0; i < token.length(); ++i) {
+    if (token[i] != '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isEllipsisToken(const String &token) {
+  if (token.length() < 3) {
+    return false;
+  }
+  for (size_t i = 0; i < token.length(); ++i) {
+    if (token[i] != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool isStandaloneRhythmToken(const String &token) { return isHyphenToken(token); }
+
+bool prefixHasBoundary(const String &lowered, const char *prefix) {
+  const size_t prefixLength = std::strlen(prefix);
+  if (!lowered.startsWith(prefix)) {
+    return false;
+  }
+  if (lowered.length() == prefixLength) {
+    return true;
+  }
+
+  const char next = lowered[prefixLength];
+  const uint8_t nextValue = LatinText::byteValue(next);
+  return (nextValue <= ' ' && !LatinText::isWordCharacter(nextValue)) || next == ':' ||
+         next == '.' || next == '-';
+}
+
+bool pushCleanWord(String token, std::vector<String> &words, ParseStats *stats,
+                   const MemoryLowFn &memoryLow) {
+  trimAsciiWhitespace(token);
+
+  if (token.length() >= 3 && static_cast<uint8_t>(token[0]) == 0xEF &&
+      static_cast<uint8_t>(token[1]) == 0xBB && static_cast<uint8_t>(token[2]) == 0xBF) {
+    token.remove(0, 3);
+  }
+
+  trimAsciiWhitespace(token);
+
+  if (token.isEmpty() ||
+      (!tokenHasReadableCharacter(token) && !isStandaloneRhythmToken(token))) {
+    return true;
+  }
+
+  if ((words.size() % kParseMemoryCheckWordInterval) == 0 && words.size() > 0 && memoryLow &&
+      memoryLow()) {
+    if (stats != nullptr) {
+      stats->memoryLow = true;
+    }
+    return false;
+  }
+
+  words.push_back(token);
+  return true;
+}
+
+String stripBom(String text) {
+  trimAsciiWhitespace(text);
+  if (text.length() >= 3 && static_cast<uint8_t>(text[0]) == 0xEF &&
+      static_cast<uint8_t>(text[1]) == 0xBB && static_cast<uint8_t>(text[2]) == 0xBF) {
+    text.remove(0, 3);
+    trimAsciiWhitespace(text);
+  }
+  return text;
+}
+
+bool chapterTitleFromLine(const String &line, String &title) {
+  String trimmed = normalizeDisplayText(stripBom(line));
+  trimAsciiWhitespace(trimmed);
+  if (trimmed.isEmpty() || trimmed.length() > kMaxChapterTitleChars) {
+    return false;
+  }
+
+  if (trimmed.startsWith("#")) {
+    size_t prefixLength = 0;
+    while (prefixLength < trimmed.length() && trimmed[prefixLength] == '#') {
+      ++prefixLength;
+    }
+    title = trimmed.substring(prefixLength);
+    trimAsciiWhitespace(title);
+    return !title.isEmpty();
+  }
+
+  String lowered = trimmed;
+  lowered.toLowerCase();
+  if (prefixHasBoundary(lowered, "chapter") || prefixHasBoundary(lowered, "part") ||
+      prefixHasBoundary(lowered, "book")) {
+    title = trimmed;
+    return true;
+  }
+
+  return false;
+}
+
+void addChapterMarker(BookContent &book, const String &title) {
+  if (title.isEmpty()) {
+    return;
+  }
+
+  ChapterMarker marker;
+  marker.title = title;
+  marker.wordIndex = book.words.size();
+
+  if (!book.chapters.empty() && book.chapters.back().wordIndex == marker.wordIndex) {
+    book.chapters.back() = marker;
+    return;
+  }
+
+  book.chapters.push_back(marker);
+}
+
+void addParagraphMarker(BookContent &book) {
+  const size_t wordIndex = book.words.size();
+  if (!book.paragraphStarts.empty() && book.paragraphStarts.back() == wordIndex) {
+    return;
+  }
+
+  book.paragraphStarts.push_back(wordIndex);
+}
+
+String directiveValue(const String &line, const char *directive) {
+  String value = line.substring(std::strlen(directive));
+  trimAsciiWhitespace(value);
+  if (!value.isEmpty() && (value[0] == ':' || value[0] == '-' || value[0] == '.')) {
+    value.remove(0, 1);
+    trimAsciiWhitespace(value);
+  }
+  return normalizeDisplayText(value);
+}
+
+bool appendLineWords(const String &line, std::vector<String> &words, ParseStats *stats,
+                     const MemoryLowFn &memoryLow) {
+  return appendTokenizedLineWords(
+      line, [&](const String &token) { return pushCleanWord(token, words, stats, memoryLow); },
+      [&]() { return words.size(); }, stats);
+}
+
+bool processBookLine(const String &line, BookContent &book, bool &paragraphPending,
+                     ParseStats *stats, const MemoryLowFn &memoryLow) {
+  const String trimmed = stripBom(line);
+  if (trimmed.isEmpty()) {
+    paragraphPending = true;
+    return true;
+  }
+
+  String chapterTitle;
+  if (chapterTitleFromLine(line, chapterTitle)) {
+    addChapterMarker(book, chapterTitle);
+    paragraphPending = true;
+  }
+
+  if (paragraphPending) {
+    addParagraphMarker(book);
+    paragraphPending = false;
+  }
+  return appendLineWords(line, book.words, stats, memoryLow);
+}
+
+bool processRsvpLine(const String &line, BookContent &book, bool &paragraphPending,
+                     ParseStats *stats, const MemoryLowFn &memoryLow) {
+  String trimmed = stripBom(line);
+  if (trimmed.isEmpty()) {
+    paragraphPending = true;
+    return true;
+  }
+
+  if (trimmed.startsWith("@@")) {
+    trimmed.remove(0, 1);
+    if (paragraphPending) {
+      addParagraphMarker(book);
+      paragraphPending = false;
+    }
+    return appendLineWords(trimmed, book.words, stats, memoryLow);
+  }
+
+  if (trimmed.startsWith("@")) {
+    String lowered = trimmed;
+    lowered.toLowerCase();
+    if (prefixHasBoundary(lowered, "@para")) {
+      paragraphPending = true;
+      return true;
+    }
+    if (prefixHasBoundary(lowered, "@chapter")) {
+      String title = directiveValue(trimmed, "@chapter");
+      if (title.isEmpty()) {
+        title = "Chapter";
+      }
+      addChapterMarker(book, title);
+      paragraphPending = true;
+      return true;
+    }
+    if (prefixHasBoundary(lowered, "@title")) {
+      book.title = directiveValue(trimmed, "@title");
+      return true;
+    }
+    if (prefixHasBoundary(lowered, "@author")) {
+      book.author = directiveValue(trimmed, "@author");
+      return true;
+    }
+    return true;
+  }
+
+  if (paragraphPending) {
+    addParagraphMarker(book);
+    paragraphPending = false;
+  }
+  return appendLineWords(line, book.words, stats, memoryLow);
+}
 
 }  // namespace booktext

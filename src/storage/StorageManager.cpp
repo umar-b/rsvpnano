@@ -22,9 +22,22 @@
 #define RSVP_MAX_BOOK_WORDS 0
 #endif
 
-// Text normalization + the parse-stats type now live in the BookText module.
+// Book-text parsing now lives in the BookText module; pull the pieces the
+// SD-bound paths (directive readers, indexed builder, parse driver) still call.
+using booktext::appendTokenizedLineWords;
+using booktext::chapterTitleFromLine;
+using booktext::directiveValue;
+using booktext::hasBookWordLimit;
+using booktext::isStandaloneRhythmToken;
 using booktext::normalizeDisplayText;
 using booktext::ParseStats;
+using booktext::prefixHasBoundary;
+using booktext::processBookLine;
+using booktext::processRsvpLine;
+using booktext::reachedBookWordLimit;
+using booktext::stripBom;
+using booktext::tokenHasReadableCharacter;
+using booktext::trimAsciiWhitespace;
 
 namespace {
 
@@ -45,119 +58,11 @@ constexpr int kSdFrequenciesKhz[] = {
     SDMMC_FREQ_PROBING,
 };
 
-bool hasBookWordLimit() { return kMaxBookWords > 0; }
-
-bool reachedBookWordLimit(size_t wordCount) {
-  return hasBookWordLimit() && wordCount >= kMaxBookWords;
-}
 
 
 bool parseMemoryLow() {
   return heap_caps_get_free_size(MALLOC_CAP_8BIT) < kParseMinFreeHeapBytes ||
          heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) < kParseMinLargestHeapBlockBytes;
-}
-
-bool isAsciiTrimWhitespace(char c) {
-  switch (c) {
-    case ' ':
-    case '\t':
-    case '\n':
-    case '\r':
-    case '\f':
-    case '\v':
-      return true;
-    default:
-      return false;
-  }
-}
-
-void trimAsciiWhitespace(String &text) {
-  size_t start = 0;
-  while (start < text.length() && isAsciiTrimWhitespace(text[start])) {
-    ++start;
-  }
-
-  size_t end = text.length();
-  while (end > start && isAsciiTrimWhitespace(text[end - 1])) {
-    --end;
-  }
-
-  if (end < text.length()) {
-    text.remove(end);
-  }
-  if (start > 0) {
-    text.remove(0, start);
-  }
-}
-
-bool isWordBoundary(char c) {
-  const uint8_t value = LatinText::byteValue(c);
-  return value <= ' ' && !LatinText::isWordCharacter(value) &&
-         !LatinText::isLowCustomSlotByte(value);
-}
-
-bool isReadableTokenChar(char c) {
-  return LatinText::isWordCharacter(LatinText::byteValue(c));
-}
-
-bool isInlineWordHyphen(const String &text, size_t index) {
-  if (index == 0 || index + 1 >= text.length() || text[index] != '-') {
-    return false;
-  }
-  if (text[index - 1] == '-' || text[index + 1] == '-') {
-    return false;
-  }
-  return isReadableTokenChar(text[index - 1]) && isReadableTokenChar(text[index + 1]);
-}
-
-bool tokenHasReadableCharacter(const String &token) {
-  for (size_t i = 0; i < token.length(); ++i) {
-    if (isReadableTokenChar(token[i])) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool isHyphenToken(const String &token) {
-  if (token.isEmpty()) {
-    return false;
-  }
-  for (size_t i = 0; i < token.length(); ++i) {
-    if (token[i] != '-') {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool isEllipsisToken(const String &token) {
-  if (token.length() < 3) {
-    return false;
-  }
-  for (size_t i = 0; i < token.length(); ++i) {
-    if (token[i] != '.') {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool isStandaloneRhythmToken(const String &token) { return isHyphenToken(token); }
-
-bool prefixHasBoundary(const String &lowered, const char *prefix) {
-  const size_t prefixLength = std::strlen(prefix);
-  if (!lowered.startsWith(prefix)) {
-    return false;
-  }
-  if (lowered.length() == prefixLength) {
-    return true;
-  }
-
-  const char next = lowered[prefixLength];
-  const uint8_t nextValue = LatinText::byteValue(next);
-  return (nextValue <= ' ' && !LatinText::isWordCharacter(nextValue)) || next == ':' ||
-         next == '.' || next == '-';
 }
 
 bool booksDirectoryExists() {
@@ -520,289 +425,6 @@ bool writeDiagnosticProbeFile(const char *directoryPath) {
   return written > 0 && removed;
 }
 
-template <typename PushToken, typename WordCount>
-bool appendTokenizedLineWords(const String &line, PushToken pushToken, WordCount wordCount,
-                              ParseStats *stats) {
-  const String normalizedLine = normalizeDisplayText(line, stats);
-  String currentWord;
-  String pendingToken;
-  currentWord.reserve(32);
-  pendingToken.reserve(32);
-
-  auto flushPending = [&]() -> bool {
-    if (pendingToken.isEmpty()) {
-      return true;
-    }
-    if (!pushToken(pendingToken)) {
-      return false;
-    }
-    pendingToken = "";
-    return !reachedBookWordLimit(wordCount());
-  };
-
-  auto finishToken = [&](String token) -> bool {
-    trimAsciiWhitespace(token);
-    if (token.isEmpty()) {
-      return true;
-    }
-
-    if (isEllipsisToken(token)) {
-      if (!pendingToken.isEmpty()) {
-        pendingToken += "...";
-      }
-      return true;
-    }
-
-    if (isHyphenToken(token)) {
-      if (!flushPending()) {
-        return false;
-      }
-      if (!pushToken("-")) {
-        return false;
-      }
-      return !reachedBookWordLimit(wordCount());
-    }
-
-    if (!flushPending()) {
-      return false;
-    }
-    pendingToken = token;
-    return true;
-  };
-
-  auto flushCurrent = [&]() -> bool {
-    if (currentWord.isEmpty()) {
-      return true;
-    }
-    const bool ok = finishToken(currentWord);
-    currentWord = "";
-    return ok;
-  };
-
-  for (size_t i = 0; i < normalizedLine.length(); ++i) {
-    const char c = normalizedLine[i];
-    if (isWordBoundary(c)) {
-      if (!flushCurrent()) {
-        return false;
-      }
-      continue;
-    }
-
-    if (c == '-') {
-      if (isInlineWordHyphen(normalizedLine, i)) {
-        currentWord += c;
-        continue;
-      }
-      if (!flushCurrent() || !finishToken("-")) {
-        return false;
-      }
-      while (i + 1 < normalizedLine.length() && normalizedLine[i + 1] == '-') {
-        ++i;
-      }
-      continue;
-    }
-
-    if (c == '.' && i + 2 < normalizedLine.length() && normalizedLine[i + 1] == '.' &&
-        normalizedLine[i + 2] == '.') {
-      currentWord += "...";
-      i += 2;
-      while (i + 1 < normalizedLine.length() && normalizedLine[i + 1] == '.') {
-        ++i;
-      }
-      if (!flushCurrent()) {
-        return false;
-      }
-      continue;
-    }
-
-    currentWord += c;
-  }
-
-  if (!flushCurrent()) {
-    return false;
-  }
-
-  return flushPending();
-}
-
-bool pushCleanWord(String token, std::vector<String> &words, ParseStats *stats) {
-  trimAsciiWhitespace(token);
-
-  if (token.length() >= 3 && static_cast<uint8_t>(token[0]) == 0xEF &&
-      static_cast<uint8_t>(token[1]) == 0xBB && static_cast<uint8_t>(token[2]) == 0xBF) {
-    token.remove(0, 3);
-  }
-
-  trimAsciiWhitespace(token);
-
-  if (token.isEmpty() ||
-      (!tokenHasReadableCharacter(token) && !isStandaloneRhythmToken(token))) {
-    return true;
-  }
-
-  if ((words.size() % kParseMemoryCheckWordInterval) == 0 && words.size() > 0 &&
-      parseMemoryLow()) {
-    if (stats != nullptr) {
-      stats->memoryLow = true;
-    }
-    return false;
-  }
-
-  words.push_back(token);
-  return true;
-}
-
-String stripBom(String text) {
-  trimAsciiWhitespace(text);
-  if (text.length() >= 3 && static_cast<uint8_t>(text[0]) == 0xEF &&
-      static_cast<uint8_t>(text[1]) == 0xBB && static_cast<uint8_t>(text[2]) == 0xBF) {
-    text.remove(0, 3);
-    trimAsciiWhitespace(text);
-  }
-  return text;
-}
-
-bool chapterTitleFromLine(const String &line, String &title) {
-  String trimmed = normalizeDisplayText(stripBom(line));
-  trimAsciiWhitespace(trimmed);
-  if (trimmed.isEmpty() || trimmed.length() > kMaxChapterTitleChars) {
-    return false;
-  }
-
-  if (trimmed.startsWith("#")) {
-    size_t prefixLength = 0;
-    while (prefixLength < trimmed.length() && trimmed[prefixLength] == '#') {
-      ++prefixLength;
-    }
-    title = trimmed.substring(prefixLength);
-    trimAsciiWhitespace(title);
-    return !title.isEmpty();
-  }
-
-  String lowered = trimmed;
-  lowered.toLowerCase();
-  if (prefixHasBoundary(lowered, "chapter") || prefixHasBoundary(lowered, "part") ||
-      prefixHasBoundary(lowered, "book")) {
-    title = trimmed;
-    return true;
-  }
-
-  return false;
-}
-
-void addChapterMarker(BookContent &book, const String &title) {
-  if (title.isEmpty()) {
-    return;
-  }
-
-  ChapterMarker marker;
-  marker.title = title;
-  marker.wordIndex = book.words.size();
-
-  if (!book.chapters.empty() && book.chapters.back().wordIndex == marker.wordIndex) {
-    book.chapters.back() = marker;
-    return;
-  }
-
-  book.chapters.push_back(marker);
-}
-
-void addParagraphMarker(BookContent &book) {
-  const size_t wordIndex = book.words.size();
-  if (!book.paragraphStarts.empty() && book.paragraphStarts.back() == wordIndex) {
-    return;
-  }
-
-  book.paragraphStarts.push_back(wordIndex);
-}
-
-String directiveValue(const String &line, const char *directive) {
-  String value = line.substring(std::strlen(directive));
-  trimAsciiWhitespace(value);
-  if (!value.isEmpty() && (value[0] == ':' || value[0] == '-' || value[0] == '.')) {
-    value.remove(0, 1);
-    trimAsciiWhitespace(value);
-  }
-  return normalizeDisplayText(value);
-}
-
-bool appendLineWords(const String &line, std::vector<String> &words, ParseStats *stats) {
-  return appendTokenizedLineWords(
-      line, [&](const String &token) { return pushCleanWord(token, words, stats); },
-      [&]() { return words.size(); }, stats);
-}
-
-bool processBookLine(const String &line, BookContent &book, bool &paragraphPending,
-                     ParseStats *stats) {
-  const String trimmed = stripBom(line);
-  if (trimmed.isEmpty()) {
-    paragraphPending = true;
-    return true;
-  }
-
-  String chapterTitle;
-  if (chapterTitleFromLine(line, chapterTitle)) {
-    addChapterMarker(book, chapterTitle);
-    paragraphPending = true;
-  }
-
-  if (paragraphPending) {
-    addParagraphMarker(book);
-    paragraphPending = false;
-  }
-  return appendLineWords(line, book.words, stats);
-}
-
-bool processRsvpLine(const String &line, BookContent &book, bool &paragraphPending,
-                     ParseStats *stats) {
-  String trimmed = stripBom(line);
-  if (trimmed.isEmpty()) {
-    paragraphPending = true;
-    return true;
-  }
-
-  if (trimmed.startsWith("@@")) {
-    trimmed.remove(0, 1);
-    if (paragraphPending) {
-      addParagraphMarker(book);
-      paragraphPending = false;
-    }
-    return appendLineWords(trimmed, book.words, stats);
-  }
-
-  if (trimmed.startsWith("@")) {
-    String lowered = trimmed;
-    lowered.toLowerCase();
-    if (prefixHasBoundary(lowered, "@para")) {
-      paragraphPending = true;
-      return true;
-    }
-    if (prefixHasBoundary(lowered, "@chapter")) {
-      String title = directiveValue(trimmed, "@chapter");
-      if (title.isEmpty()) {
-        title = "Chapter";
-      }
-      addChapterMarker(book, title);
-      paragraphPending = true;
-      return true;
-    }
-    if (prefixHasBoundary(lowered, "@title")) {
-      book.title = directiveValue(trimmed, "@title");
-      return true;
-    }
-    if (prefixHasBoundary(lowered, "@author")) {
-      book.author = directiveValue(trimmed, "@author");
-      return true;
-    }
-    return true;
-  }
-
-  if (paragraphPending) {
-    addParagraphMarker(book);
-    paragraphPending = false;
-  }
-  return appendLineWords(line, book.words, stats);
-}
 
 struct RsvpDirectiveValues {
   String title;
@@ -2202,6 +1824,7 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat) {
   bool keepReading = true;
   bool parseFailed = false;
   ParseStats stats;
+  const booktext::MemoryLowFn memLow = [] { return parseMemoryLow(); };
 
   constexpr size_t kBufSize = 4096;
   static uint8_t buf[kBufSize];
@@ -2221,8 +1844,8 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat) {
       }
 
       if (c == '\n') {
-        keepReading = rsvpFormat ? processRsvpLine(line, book, paragraphPending, &stats)
-                                 : processBookLine(line, book, paragraphPending, &stats);
+        keepReading = rsvpFormat ? processRsvpLine(line, book, paragraphPending, &stats, memLow)
+                                 : processBookLine(line, book, paragraphPending, &stats, memLow);
         if (!keepReading && hasBookWordLimit()) {
           Serial.printf("[storage] Reached %lu word limit, truncating book\n",
                         static_cast<unsigned long>(kMaxBookWords));
@@ -2239,8 +1862,8 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat) {
 
       line += c;
       if (line.length() >= kMaxBookLineChars) {
-        keepReading = rsvpFormat ? processRsvpLine(line, book, paragraphPending, &stats)
-                                 : processBookLine(line, book, paragraphPending, &stats);
+        keepReading = rsvpFormat ? processRsvpLine(line, book, paragraphPending, &stats, memLow)
+                                 : processBookLine(line, book, paragraphPending, &stats, memLow);
         ++stats.longLineSplits;
         if (!keepReading && stats.memoryLow) {
           parseFailed = true;
@@ -2256,9 +1879,9 @@ bool StorageManager::parseFile(File &file, BookContent &book, bool rsvpFormat) {
 
   if (!line.isEmpty() && keepReading && !reachedBookWordLimit(book.words.size())) {
     if (rsvpFormat) {
-      keepReading = processRsvpLine(line, book, paragraphPending, &stats);
+      keepReading = processRsvpLine(line, book, paragraphPending, &stats, memLow);
     } else {
-      keepReading = processBookLine(line, book, paragraphPending, &stats);
+      keepReading = processBookLine(line, book, paragraphPending, &stats, memLow);
     }
     if (!keepReading && stats.memoryLow) {
       parseFailed = true;
