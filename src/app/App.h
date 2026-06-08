@@ -17,6 +17,7 @@
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
+#include "storage/BookProgress.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
 #include "timer/FocusTimer.h"
@@ -313,13 +314,6 @@ class App {
   bool loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback = false,
                        bool allowIndexBuild = true, bool allowEpubConversion = true,
                        bool rebuildTimeEstimate = true);
-  String bookPositionKey(const String &bookPath) const;
-  String bookWordCountKey(const String &bookPath) const;
-  String bookRecentKey(const String &bookPath) const;
-  uint32_t nextRecentSequence();
-  uint32_t bookRecentSequence(const String &bookPath);
-  void markBookRecent(const String &bookPath);
-  uint32_t savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback = false);
   bool bookProgressPercent(size_t bookIndex, uint8_t &percent);
   int findBookIndexByPath(const String &path) const;
   void renderMenu();
@@ -414,6 +408,7 @@ class App {
   CompanionSyncManager companionSync_;
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
+  BookProgress bookProgress_{preferences_};
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 

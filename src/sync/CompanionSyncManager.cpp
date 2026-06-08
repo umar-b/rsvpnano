@@ -1535,43 +1535,7 @@ CompanionSyncManager::RsvpMetadata CompanionSyncManager::readRsvpMetadata(
 }
 
 bool CompanionSyncManager::progressPercentForPath(const String &path, uint8_t &percent) {
-  const String positionKey = bookPositionKey(path);
-  const String countKey = bookWordCountKey(path);
-  if (!preferences_.isKey(positionKey.c_str()) || !preferences_.isKey(countKey.c_str())) {
-    return false;
-  }
-
-  const size_t wordCount = preferences_.getUInt(countKey.c_str(), 0);
-  if (wordCount <= 1) {
-    return false;
-  }
-
-  size_t wordIndex = preferences_.getUInt(positionKey.c_str(), 0);
-  wordIndex = std::min(wordIndex, wordCount - 1);
-  const size_t progress = (wordIndex * static_cast<size_t>(100)) / (wordCount - 1);
-  percent = static_cast<uint8_t>(std::min(static_cast<size_t>(100), progress));
-  return true;
-}
-
-String CompanionSyncManager::bookPositionKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "p%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String CompanionSyncManager::bookWordCountKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "c%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-uint32_t CompanionSyncManager::hashBookPath(const String &path) const {
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < path.length(); ++i) {
-    hash ^= static_cast<uint8_t>(path[i]);
-    hash *= 16777619UL;
-  }
-  return hash;
+  return bookProgress_.progressPercent(path, percent);
 }
 
 void CompanionSyncManager::finishUpload(bool success) {

@@ -5,6 +5,8 @@
 #include <Preferences.h>
 #include <WebServer.h>
 
+#include "storage/BookProgress.h"
+
 class CompanionSyncManager {
  public:
   struct Config {
@@ -67,9 +69,6 @@ class CompanionSyncManager {
   String sanitizeFilename(const String &name) const;
   RsvpMetadata readRsvpMetadata(const String &path) const;
   bool progressPercentForPath(const String &path, uint8_t &percent);
-  String bookPositionKey(const String &bookPath) const;
-  String bookWordCountKey(const String &bookPath) const;
-  uint32_t hashBookPath(const String &path) const;
   void finishUpload(bool success);
 
   static CompanionSyncManager *instance_;
@@ -82,6 +81,7 @@ class CompanionSyncManager {
   String pairingCode_;
   String networkSsid_;
   Preferences preferences_;
+  BookProgress bookProgress_{preferences_};
   String statusLine1_ = "Idle";
   String statusLine2_;
   NetworkMode networkMode_ = NetworkMode::None;
