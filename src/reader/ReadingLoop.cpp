@@ -104,460 +104,8 @@ constexpr uint16_t kLowWpmMax = 100;
 constexpr uint16_t kLowWpmStep = 10;
 constexpr uint16_t kMaxWpm = 1000;
 constexpr uint16_t kHighWpmStep = 25;
-constexpr uint8_t kLongWordAfterChars = 6;
-constexpr uint8_t kLongWordPercentPerChar = 6;
-constexpr uint8_t kVeryLongWordAfterChars = 10;
-constexpr uint8_t kVeryLongWordPercentPerChar = 9;
-constexpr uint8_t kUltraLongWordAfterChars = 14;
-constexpr uint8_t kUltraLongWordPercentPerChar = 12;
-constexpr uint8_t kLongWordMaxPercent = 170;
-constexpr uint8_t kCompoundJoinerPercent = 14;
-constexpr uint8_t kLongCompoundWordPercent = 18;
-constexpr uint8_t kTechnicalConnectorPercent = 8;
-constexpr uint8_t kSyllableBonusAfterCount = 2;
-constexpr uint8_t kSyllableBonusPercentPerGroup = 10;
-constexpr uint8_t kSyllableBonusMaxPercent = 50;
-constexpr uint8_t kAllCapsComplexityPercent = 14;
-constexpr uint8_t kMixedTokenComplexityPercent = 22;
-constexpr uint8_t kNumericTokenComplexityPercent = 10;
-constexpr uint8_t kDenseConnectorComplexityPercent = 12;
-constexpr uint8_t kComplexWordMaxPercent = 85;
-constexpr uint8_t kCommaPausePercent = 45;
-constexpr uint8_t kDashPausePercent = 60;
-constexpr uint8_t kClausePausePercent = 80;
-constexpr uint8_t kEllipsisPausePercent = 110;
-constexpr uint8_t kSentencePausePercent = 135;
-constexpr uint8_t kStrongSentencePausePercent = 150;
 constexpr uint8_t kMaxCatchUpWords = 4;
-constexpr uint16_t kMaxPacingDelayMs = 600;
 
-bool isWordCharacter(char c) {
-  return LatinText::isWordCharacter(static_cast<uint8_t>(c));
-}
-
-bool isLetterCharacter(char c) {
-  return LatinText::isLetter(static_cast<uint8_t>(c));
-}
-
-bool isDigitCharacter(char c) {
-  return LatinText::isDigit(static_cast<uint8_t>(c));
-}
-
-bool isLowercaseLetter(char c) {
-  return LatinText::isLowercaseLetter(static_cast<uint8_t>(c));
-}
-
-bool isUppercaseLetter(char c) {
-  return LatinText::isUppercaseLetter(static_cast<uint8_t>(c));
-}
-
-bool isVowelCharacter(char c) {
-  return LatinText::isVowel(static_cast<uint8_t>(c));
-}
-
-bool isSegmentSeparator(char c) {
-  switch (c) {
-    case '-':
-    case '/':
-    case '_':
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool isTechnicalConnector(char c) {
-  switch (c) {
-    case '-':
-    case '/':
-    case '_':
-    case '.':
-    case '+':
-    case '\\':
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool isIgnoredTrailingChar(char c) {
-  switch (c) {
-    case '"':
-    case '\'':
-    case ')':
-    case ']':
-    case '}':
-      return true;
-    default:
-      return false;
-  }
-}
-
-int letterCharacterCount(const String &word) {
-  int count = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isLetterCharacter(word[i])) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-int digitCharacterCount(const String &word) {
-  int count = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isDigitCharacter(word[i])) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-int uppercaseLetterCount(const String &word) {
-  int count = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isUppercaseLetter(word[i])) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-int readableCharacterCount(const String &word) {
-  int count = 0;
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isWordCharacter(word[i])) {
-      ++count;
-    }
-  }
-  return count;
-}
-
-int approximateSyllableGroupCount(const String &word) {
-  int groups = 0;
-  int letterCount = 0;
-  bool previousWasVowel = false;
-  String lettersOnly;
-  lettersOnly.reserve(word.length());
-
-  for (size_t i = 0; i < word.length(); ++i) {
-    const char c = word[i];
-    if (!isLetterCharacter(c)) {
-      previousWasVowel = false;
-      continue;
-    }
-
-    ++letterCount;
-    const char lowered = static_cast<char>(LatinText::toLowercaseByte(static_cast<uint8_t>(c)));
-    lettersOnly += lowered;
-
-    const bool vowel = LatinText::isVowel(static_cast<uint8_t>(lowered));
-    if (vowel && !previousWasVowel) {
-      ++groups;
-    }
-    previousWasVowel = vowel;
-  }
-
-  if (groups > 1 && letterCount > 3 && lettersOnly.endsWith("e") && !lettersOnly.endsWith("le") &&
-      !lettersOnly.endsWith("ye")) {
-    --groups;
-  }
-
-  if (groups == 0 && letterCount > 0) {
-    groups = 1;
-  }
-
-  return groups;
-}
-
-int compoundJoinerCount(const String &word) {
-  int count = 0;
-  for (size_t i = 1; i + 1 < word.length(); ++i) {
-    if (!isSegmentSeparator(word[i])) {
-      continue;
-    }
-    if (!isWordCharacter(word[i - 1]) || !isWordCharacter(word[i + 1])) {
-      continue;
-    }
-    ++count;
-  }
-  return count;
-}
-
-int technicalConnectorCount(const String &word) {
-  int count = 0;
-  for (size_t i = 1; i + 1 < word.length(); ++i) {
-    if (!isTechnicalConnector(word[i])) {
-      continue;
-    }
-    if (!isWordCharacter(word[i - 1]) || !isWordCharacter(word[i + 1])) {
-      continue;
-    }
-    ++count;
-  }
-  return count;
-}
-
-int lastMeaningfulCharIndex(const String &word) {
-  for (int i = static_cast<int>(word.length()) - 1; i >= 0; --i) {
-    if (!isIgnoredTrailingChar(word[static_cast<size_t>(i)])) {
-      return i;
-    }
-  }
-  return -1;
-}
-
-char trailingRhythmChar(const String &word) {
-  const int index = lastMeaningfulCharIndex(word);
-  if (index >= 0) {
-    return word[static_cast<size_t>(index)];
-  }
-  return '\0';
-}
-
-int trailingRepeatedCharCount(const String &word, char target) {
-  int count = 0;
-  for (int i = lastMeaningfulCharIndex(word); i >= 0; --i) {
-    const char c = word[static_cast<size_t>(i)];
-    if (c != target) {
-      break;
-    }
-    ++count;
-  }
-  return count;
-}
-
-bool endsWithEllipsis(const String &word) {
-  return trailingRepeatedCharCount(word, '.') >= 3;
-}
-
-bool startsWithLowercaseLetter(const String &word) {
-  for (size_t i = 0; i < word.length(); ++i) {
-    if (isLowercaseLetter(word[i])) {
-      return true;
-    }
-    if (isLetterCharacter(word[i])) {
-      return false;
-    }
-  }
-  return false;
-}
-
-bool isDottedInitialism(const String &word) {
-  const int end = lastMeaningfulCharIndex(word);
-  if (end <= 0) {
-    return false;
-  }
-
-  int letterCount = 0;
-  bool expectLetter = true;
-  for (int i = 0; i <= end; ++i) {
-    const char c = word[static_cast<size_t>(i)];
-    if (expectLetter) {
-      if (!isLetterCharacter(c)) {
-        return false;
-      }
-      ++letterCount;
-      expectLetter = false;
-    } else if (c == '.') {
-      expectLetter = true;
-    } else {
-      return false;
-    }
-  }
-
-  return expectLetter && letterCount >= 2;
-}
-
-bool looksLikeAbbreviation(const String &word, bool nextWordStartsLowercase) {
-  String lowered = word;
-  lowered.toLowerCase();
-
-  constexpr const char *kKnownAbbreviations[] = {
-      "mr.",  "mrs.",  "ms.",   "dr.",   "prof.", "sr.",   "jr.",  "st.",
-      "vs.",  "etc.",  "e.g.",  "i.e.",  "cf.",   "no.",   "fig.", "eq.",
-      "inc.", "ltd.",  "co.",   "dept.", "mt.",   "ft.",
-  };
-
-  for (const char *abbreviation : kKnownAbbreviations) {
-    if (lowered == abbreviation) {
-      return true;
-    }
-  }
-
-  if (!lowered.endsWith(".")) {
-    return false;
-  }
-
-  if (isDottedInitialism(word)) {
-    return true;
-  }
-
-  if (readableCharacterCount(lowered) <= 2) {
-    return true;
-  }
-
-  if (nextWordStartsLowercase && readableCharacterCount(lowered) <= 4) {
-    return true;
-  }
-
-  return false;
-}
-
-uint16_t clampPacingDelayMs(uint16_t delayMs) {
-  if (delayMs > kMaxPacingDelayMs) {
-    return kMaxPacingDelayMs;
-  }
-  return delayMs;
-}
-
-uint8_t clampScalePercent(uint8_t percent) {
-  if (percent < 25) {
-    return 25;
-  }
-  return percent;
-}
-
-uint16_t scaledPercent(uint16_t basePercent, uint8_t scalePercent) {
-  return static_cast<uint16_t>((static_cast<uint32_t>(basePercent) *
-                                static_cast<uint32_t>(clampScalePercent(scalePercent))) /
-                               100UL);
-}
-
-uint32_t scaledDelayMs(uint16_t bonusPercent, uint16_t delayMs) {
-  return (static_cast<uint32_t>(bonusPercent) *
-          static_cast<uint32_t>(clampPacingDelayMs(delayMs))) /
-         100UL;
-}
-
-uint16_t lengthBonusPercentForWord(const String &word) {
-  const int readableLength = readableCharacterCount(word);
-  if (readableLength == 0) {
-    return 0;
-  }
-
-  uint16_t bonusPercent = 0;
-  if (readableLength > kLongWordAfterChars) {
-    const int extraChars = readableLength - kLongWordAfterChars;
-    bonusPercent +=
-        static_cast<uint16_t>(extraChars * static_cast<int>(kLongWordPercentPerChar));
-  }
-
-  if (readableLength > kVeryLongWordAfterChars) {
-    const int extraChars = readableLength - kVeryLongWordAfterChars;
-    bonusPercent +=
-        static_cast<uint16_t>(extraChars * static_cast<int>(kVeryLongWordPercentPerChar));
-  }
-
-  if (readableLength > kUltraLongWordAfterChars) {
-    const int extraChars = readableLength - kUltraLongWordAfterChars;
-    bonusPercent +=
-        static_cast<uint16_t>(extraChars * static_cast<int>(kUltraLongWordPercentPerChar));
-  }
-
-  const int joinerCount = compoundJoinerCount(word);
-  if (joinerCount > 0) {
-    bonusPercent +=
-        static_cast<uint16_t>(joinerCount * static_cast<int>(kCompoundJoinerPercent));
-    if (readableLength >= kVeryLongWordAfterChars) {
-      bonusPercent += kLongCompoundWordPercent;
-    }
-  }
-
-  const int techConnectorCount = technicalConnectorCount(word);
-  if (techConnectorCount > joinerCount) {
-    bonusPercent += static_cast<uint16_t>((techConnectorCount - joinerCount) *
-                                          static_cast<int>(kTechnicalConnectorPercent));
-  }
-
-  return std::min<uint16_t>(kLongWordMaxPercent, bonusPercent);
-}
-
-uint16_t complexityBonusPercentForWord(const String &word) {
-  uint16_t bonusPercent = 0;
-  const int syllableGroups = approximateSyllableGroupCount(word);
-  if (syllableGroups > kSyllableBonusAfterCount) {
-    const int extraGroups = syllableGroups - kSyllableBonusAfterCount;
-    bonusPercent += static_cast<uint16_t>(std::min(
-        static_cast<int>(kSyllableBonusMaxPercent),
-        extraGroups * static_cast<int>(kSyllableBonusPercentPerGroup)));
-  }
-
-  const int letterCount = letterCharacterCount(word);
-  const int digitCount = digitCharacterCount(word);
-  const int uppercaseCount = uppercaseLetterCount(word);
-  if (letterCount > 0 && digitCount > 0) {
-    bonusPercent += kMixedTokenComplexityPercent;
-  } else if (digitCount >= 3) {
-    bonusPercent += kNumericTokenComplexityPercent;
-  }
-
-  if (uppercaseCount >= 2 && uppercaseCount == letterCount) {
-    bonusPercent += kAllCapsComplexityPercent;
-  }
-
-  const int techConnectorCount = technicalConnectorCount(word);
-  if (techConnectorCount >= 2) {
-    bonusPercent += static_cast<uint16_t>((techConnectorCount - 1) *
-                                          static_cast<int>(kDenseConnectorComplexityPercent));
-  }
-
-  return std::min<uint16_t>(kComplexWordMaxPercent, bonusPercent);
-}
-
-uint16_t punctuationPausePercentForWord(const String &word, bool nextWordStartsLowercase) {
-  if (endsWithEllipsis(word)) {
-    return kEllipsisPausePercent;
-  }
-
-  switch (trailingRhythmChar(word)) {
-    case ',':
-      return kCommaPausePercent;
-    case '-':
-      return kDashPausePercent;
-    case ';':
-    case ':':
-      return kClausePausePercent;
-    case '.':
-      if (!looksLikeAbbreviation(word, nextWordStartsLowercase)) {
-        return kSentencePausePercent;
-      }
-      return 0;
-    case '!':
-    case '?':
-      return kStrongSentencePausePercent;
-    default:
-      return 0;
-  }
-}
-
-uint32_t pacingBonusMsForWord(const String &word, bool nextWordStartsLowercase,
-                              const ReadingLoop::PacingConfig &config) {
-  if (word.isEmpty()) {
-    return 0;
-  }
-
-  uint32_t totalBonusMs = 0;
-  totalBonusMs += scaledDelayMs(
-      scaledPercent(lengthBonusPercentForWord(word), config.longWordScalePercent),
-      config.longWordDelayMs);
-  totalBonusMs += scaledDelayMs(
-      scaledPercent(complexityBonusPercentForWord(word), config.complexWordScalePercent),
-      config.complexWordDelayMs);
-  totalBonusMs +=
-      scaledDelayMs(scaledPercent(punctuationPausePercentForWord(word, nextWordStartsLowercase),
-                                  config.punctuationScalePercent),
-                    config.punctuationDelayMs);
-  return totalBonusMs;
-}
-
-uint32_t durationForWord(const String &word, bool nextWordStartsLowercase, uint32_t baseIntervalMs,
-                         const ReadingLoop::PacingConfig &config) {
-  if (baseIntervalMs == 0) {
-    return 0;
-  }
-  return baseIntervalMs + pacingBonusMsForWord(word, nextWordStartsLowercase, config);
-}
 
 }  // namespace
 
@@ -625,12 +173,12 @@ uint32_t ReadingLoop::currentWordDurationMs() const {
   bool nextWordStartsLowercase = false;
   const size_t nextIndex = currentIndex_ + 1;
   if (nextIndex < wordCount()) {
-    nextWordStartsLowercase = startsWithLowercaseLetter(wordAt(nextIndex));
+    nextWordStartsLowercase = wordpacing::startsWithLowercaseLetter(wordAt(nextIndex));
   } else if (!usingLoadedBook() && nextIndex < kDemoWordCount) {
-    nextWordStartsLowercase = startsWithLowercaseLetter(String(kDemoWords[nextIndex]));
+    nextWordStartsLowercase = wordpacing::startsWithLowercaseLetter(String(kDemoWords[nextIndex]));
   }
 
-  return durationForWord(currentWord_, nextWordStartsLowercase, wordIntervalMs(), pacingConfig_);
+  return wordpacing::durationForWord(currentWord_, nextWordStartsLowercase, wordIntervalMs(), pacingConfig_);
 }
 
 uint32_t ReadingLoop::wordPacingBonusMsAt(size_t index) const {
@@ -641,7 +189,7 @@ uint32_t ReadingLoop::wordPacingBonusMsAt(size_t index) const {
 
   const String word = wordAt(index);
   const bool nextLowercase = nextWordStartsLowercaseAt(index);
-  return pacingBonusMsForWord(word, nextLowercase, pacingConfig_);
+  return wordpacing::bonusMsForWord(word, nextLowercase, pacingConfig_);
 }
 
 uint32_t ReadingLoop::elapsedInCurrentWordMs(uint32_t nowMs) const {
@@ -762,12 +310,7 @@ void ReadingLoop::setWpm(uint16_t wpm) {
 }
 
 void ReadingLoop::setPacingConfig(const PacingConfig &config) {
-  pacingConfig_.longWordDelayMs = clampPacingDelayMs(config.longWordDelayMs);
-  pacingConfig_.complexWordDelayMs = clampPacingDelayMs(config.complexWordDelayMs);
-  pacingConfig_.punctuationDelayMs = clampPacingDelayMs(config.punctuationDelayMs);
-  pacingConfig_.longWordScalePercent = clampScalePercent(config.longWordScalePercent);
-  pacingConfig_.complexWordScalePercent = clampScalePercent(config.complexWordScalePercent);
-  pacingConfig_.punctuationScalePercent = clampScalePercent(config.punctuationScalePercent);
+  pacingConfig_ = wordpacing::clampConfig(config);
 }
 
 const ReadingLoop::PacingConfig &ReadingLoop::pacingConfig() const { return pacingConfig_; }
@@ -840,7 +383,7 @@ bool ReadingLoop::nextWordStartsLowercaseAt(size_t wordIndex) const {
     return false;
   }
 
-  return startsWithLowercaseLetter(wordAt(nextIndex));
+  return wordpacing::startsWithLowercaseLetter(wordAt(nextIndex));
 }
 
 bool ReadingLoop::wordEndsSentenceAt(size_t wordIndex) const {
@@ -853,15 +396,7 @@ bool ReadingLoop::wordEndsSentenceAt(size_t wordIndex) const {
     return false;
   }
 
-  switch (trailingRhythmChar(word)) {
-    case '!':
-    case '?':
-      return true;
-    case '.':
-      return !looksLikeAbbreviation(word, nextWordStartsLowercaseAt(wordIndex));
-    default:
-      return false;
-  }
+  return wordpacing::wordEndsSentence(word, nextWordStartsLowercaseAt(wordIndex));
 }
 
 size_t ReadingLoop::sentenceStartAtOrBefore(size_t wordIndex) const {
