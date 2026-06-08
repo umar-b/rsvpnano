@@ -217,9 +217,7 @@ class App {
   DisplayManager::ReaderChrome readerChrome() const;
   String readerFooterStatusLabel() const;
   String onOffLabel(bool enabled) const;
-  int scrubStepsForDrag(int deltaX) const;
   void applyScrubTarget(int targetSteps, uint32_t nowMs);
-  int browseScrollRatePermille(uint16_t y) const;
   void applyBrowseHoldScroll(uint16_t y, uint32_t elapsedMs, uint32_t nowMs);
   void renderContextBrowsePreview(size_t currentIndex, uint16_t scrollProgressPermille);
   void applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs);

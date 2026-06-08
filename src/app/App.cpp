@@ -1,5 +1,7 @@
 #include "app/App.h"
 
+#include "app/TouchGesture.h"
+
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <WiFi.h>
@@ -28,14 +30,9 @@ constexpr uint32_t kWpmFeedbackMs = 900;
 constexpr uint32_t kPowerOffHoldMs = 1600;
 constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
 constexpr uint32_t kBatterySampleIntervalMs = 180000;
-constexpr uint32_t kTouchPlayHoldMs = 420;
-constexpr uint32_t kPreviewBrowseHoldMs = 240;
 constexpr uint32_t kReaderDoubleTapWindowMs = 520;
 constexpr uint32_t kThemeToggleHoldMs = 900;
 constexpr uint32_t kScrollAnimationFrameMs = 16;
-constexpr uint16_t kSwipeThresholdPx = 40;
-constexpr uint16_t kAxisBiasPx = 12;
-constexpr uint16_t kTapSlopPx = 26;
 constexpr uint16_t kReaderDoubleTapSlopPx = 92;
 constexpr uint16_t kPreviousSentenceTapWidthPx = 96;
 constexpr uint16_t kPreviousSentenceTapHeightPx = 60;
@@ -43,12 +40,7 @@ constexpr uint16_t kFooterMetricTapWidthPx = 220;
 constexpr uint16_t kFooterMetricTapHeightPx = 32;
 constexpr uint16_t kBatteryBadgeTapWidthPx = 160;
 constexpr uint16_t kBatteryBadgeTapHeightPx = 40;
-constexpr uint16_t kScrubStepPx = 22;
-constexpr uint16_t kBrowseNeutralZonePx = 14;
 constexpr uint16_t kFocusTimerCancelHoldMaxDriftPx = 20;
-constexpr int kMaxScrubStepsPerGesture = 96;
-constexpr uint32_t kBrowseMinWordsPerSecondPermille = 4000;
-constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
 constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
@@ -1828,8 +1820,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
   const uint32_t pressDurationMs = nowMs - pausedTouch_.startMs;
   const bool ended = event.phase == TouchPhase::End;
-  const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
-                       absDeltaY <= static_cast<int>(kTapSlopPx);
+  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY);
   const bool previewBrowseMode = contextViewVisible_ && !scrollModeEnabled();
 
   if (state_ == AppState::Playing) {
@@ -1859,8 +1850,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  if (!previewBrowseMode && !ended && pausedTouchIntent_ == TouchIntent::None &&
-      pressDurationMs >= kTouchPlayHoldMs && tapLike) {
+  if (pausedTouchIntent_ == TouchIntent::None &&
+      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended)) {
     resetReaderTapTracking();
     touchPlayHeld_ = true;
     pausedTouchIntent_ = TouchIntent::PlayHold;
@@ -1870,23 +1861,27 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::None) {
-    if (absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-        absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
-      resetReaderTapTracking();
-      pausedTouchIntent_ = TouchIntent::Scrub;
-    } else if (previewBrowseMode && !ended && pressDurationMs >= kPreviewBrowseHoldMs &&
-               absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
-      resetReaderTapTracking();
-      pausedTouchIntent_ = TouchIntent::BrowseScroll;
-    } else if (!previewBrowseMode && absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
-               absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
-      resetReaderTapTracking();
-      pausedTouchIntent_ = TouchIntent::Wpm;
+    switch (touchgesture::classifyReaderDrag(absDeltaX, absDeltaY, pressDurationMs,
+                                             previewBrowseMode, ended)) {
+      case touchgesture::ReaderIntent::Scrub:
+        resetReaderTapTracking();
+        pausedTouchIntent_ = TouchIntent::Scrub;
+        break;
+      case touchgesture::ReaderIntent::BrowseScroll:
+        resetReaderTapTracking();
+        pausedTouchIntent_ = TouchIntent::BrowseScroll;
+        break;
+      case touchgesture::ReaderIntent::Wpm:
+        resetReaderTapTracking();
+        pausedTouchIntent_ = TouchIntent::Wpm;
+        break;
+      case touchgesture::ReaderIntent::None:
+        break;
     }
   }
 
   if (pausedTouchIntent_ == TouchIntent::Scrub) {
-    applyScrubTarget(scrubStepsForDrag(deltaX), nowMs);
+    applyScrubTarget(touchgesture::scrubStepsForDrag(deltaX), nowMs);
     if (ended) {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
@@ -1910,7 +1905,7 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
       return;
     }
 
-    const int wpmDelta = (deltaY < 0) ? 1 : -1;
+    const int wpmDelta = touchgesture::wpmDeltaForDrag(deltaY);
     reader_.adjustWpm(wpmDelta);
     preferences_.putUShort(kPrefWpm, reader_.wpm());
     renderWpmFeedback(nowMs);
@@ -1945,19 +1940,6 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 }
 
-int App::scrubStepsForDrag(int deltaX) const {
-  const int absDeltaX = abs(deltaX);
-  if (absDeltaX < static_cast<int>(kSwipeThresholdPx)) {
-    return 0;
-  }
-
-  int steps = 1 + ((absDeltaX - static_cast<int>(kSwipeThresholdPx)) /
-                   static_cast<int>(kScrubStepPx));
-  steps = std::min(steps, kMaxScrubStepsPerGesture);
-
-  return (deltaX > 0) ? steps : -steps;
-}
-
 void App::applyScrubTarget(int targetSteps, uint32_t nowMs) {
   if (targetSteps == pausedTouch_.gestureStepsApplied) {
     return;
@@ -1971,26 +1953,6 @@ void App::applyScrubTarget(int targetSteps, uint32_t nowMs) {
   wpmFeedbackVisible_ = false;
   renderActiveReader(nowMs);
   Serial.printf("[app] scrub target=%d word=%s\n", targetSteps, reader_.currentWord().c_str());
-}
-
-int App::browseScrollRatePermille(uint16_t y) const {
-  const int centerY = BoardConfig::DISPLAY_HEIGHT / 2;
-  const int signedDistance = static_cast<int>(y) - centerY;
-  const int absDistance = abs(signedDistance);
-  if (absDistance <= static_cast<int>(kBrowseNeutralZonePx)) {
-    return 0;
-  }
-
-  const int activeRange = std::max(1, centerY - static_cast<int>(kBrowseNeutralZonePx));
-  const int activeDistance =
-      std::min(activeRange, absDistance - static_cast<int>(kBrowseNeutralZonePx));
-  const uint32_t speedPermille =
-      kBrowseMinWordsPerSecondPermille +
-      ((kBrowseMaxWordsPerSecondPermille - kBrowseMinWordsPerSecondPermille) *
-       static_cast<uint32_t>(activeDistance)) /
-          static_cast<uint32_t>(activeRange);
-
-  return signedDistance < 0 ? -static_cast<int>(speedPermille) : static_cast<int>(speedPermille);
 }
 
 void App::renderContextBrowsePreview(size_t currentIndex, uint16_t scrollProgressPermille) {
@@ -2019,7 +1981,7 @@ void App::applyBrowseHoldScroll(uint16_t y, uint32_t elapsedMs, uint32_t nowMs) 
     return;
   }
 
-  const int ratePermille = browseScrollRatePermille(y);
+  const int ratePermille = touchgesture::browseScrollRatePermille(y, BoardConfig::DISPLAY_HEIGHT);
   pausedTouch_.browseOffsetPermille +=
       (static_cast<int32_t>(ratePermille) * static_cast<int32_t>(elapsedMs)) / 1000;
 
@@ -2076,26 +2038,24 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaY = abs(deltaY);
 
   if (menuScreen_ == MenuScreen::TextEntry) {
-    if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
+    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
       handleTextEntryTap(event.x, event.y, nowMs);
     }
     return;
   }
 
   if (menuScreen_ == MenuScreen::TypographyTuning &&
-      absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
+      touchgesture::isHorizontalSwipe(absDeltaX, absDeltaY)) {
     cycleTypographyPreviewSample(deltaX < 0 ? 1 : -1);
     return;
   }
 
-  if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
-      absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
+  if (touchgesture::isVerticalSwipe(absDeltaX, absDeltaY)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
     return;
   }
 
-  if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
+  if (touchgesture::isTap(absDeltaX, absDeltaY)) {
     selectMenuItem(nowMs);
   }
 }
@@ -2125,8 +2085,7 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
   const int deltaY = static_cast<int>(pausedTouch_.lastY) - static_cast<int>(pausedTouch_.startY);
   const int absDeltaX = abs(deltaX);
   const int absDeltaY = abs(deltaY);
-  const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
-                       absDeltaY <= static_cast<int>(kTapSlopPx);
+  const bool tapLike = touchgesture::isTap(absDeltaX, absDeltaY);
 
   if (focusTimer_.isActiveTimerRunning() && !focusTimerCancelHoldTriggered_ &&
       event.phase != TouchPhase::End &&
