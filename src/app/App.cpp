@@ -29,6 +29,7 @@ static const char *kAppTag = "app";
 constexpr uint32_t kOtaCheckTaskStackBytes = 10240;
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
+constexpr uint32_t kStarOverlayMs = 800;
 constexpr uint32_t kPowerOffHoldMs = 1600;
 constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
 constexpr uint32_t kReaderDoubleTapWindowMs = 520;
@@ -69,6 +70,7 @@ enum MenuItem : size_t {
   MenuChapters,
   MenuMarkFinished,
   MenuBookmarks,
+  MenuStarred,
   MenuStats,
   MenuBooks,
   MenuArticles,
@@ -707,6 +709,7 @@ void App::update(uint32_t nowMs) {
   updateStandbyDecision(nowMs);
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
+  updateStarOverlay(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
   if (state_ == AppState::Standby) {
@@ -1597,6 +1600,10 @@ bool App::isPreviousSentenceTap(uint16_t x, uint16_t y) const {
   return touchgesture::isPreviousSentenceTap(x, y);
 }
 
+bool App::isStarSentenceTap(uint16_t x, uint16_t y) const {
+  return touchgesture::isStarSentenceTap(x, y);
+}
+
 bool App::isActivelyReading() const { return state_ == AppState::Playing; }
 
 DisplayManager::ReaderChrome App::readerChrome() const {
@@ -1650,6 +1657,72 @@ void App::rewindToPreviousSentence(uint32_t nowMs) {
 
   Serial.printf("[app] sentence rewind index=%u word=%s\n",
                 static_cast<unsigned int>(reader_.currentIndex()), reader_.currentWord().c_str());
+}
+
+bool App::handleStarSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs) {
+  // Only when paused on a real SD book: the demo text has no path to save under,
+  // and the previous-sentence corner must keep priority where the zones touch.
+  if (isActivelyReading() || isPreviousSentenceTap(x, y) || !isStarSentenceTap(x, y)) {
+    return false;
+  }
+  if (!usingStorageBook_ || currentBookPath_.isEmpty()) {
+    return false;
+  }
+
+  starCurrentSentence(nowMs);
+  return true;
+}
+
+void App::starCurrentSentence(uint32_t nowMs) {
+  resetReaderTapTracking();
+  pausedTouch_.active = false;
+  pausedTouchIntent_ = TouchIntent::None;
+  wpmFeedbackVisible_ = false;
+
+  const size_t wordCount = reader_.wordCount();
+  const quotes::SentenceSpan span = quotes::extractSentence(
+      reader_.currentIndex(), wordCount,
+      [this](size_t i) { return reader_.wordAt(i); },
+      [this](size_t i) { return reader_.wordEndsSentenceAt(i); });
+  if (!span.found || span.text.isEmpty()) {
+    showStarOverlay("Nothing to star", nowMs);
+    return;
+  }
+
+  quotes::Quote quote;
+  quote.bookPath = currentBookPath_;
+  quote.bookTitle = currentBookTitle_;
+  quote.wordIndex = static_cast<uint32_t>(span.startIndex);
+  quote.sentence = span.text;
+
+  bool writeFailed = false;
+  const bool added = quoteStore_.add(quote, &writeFailed);
+  if (added) {
+    showStarOverlay("* Saved", nowMs);
+  } else if (writeFailed) {
+    showStarOverlay("Save failed", nowMs);
+  } else {
+    showStarOverlay("Already starred", nowMs);
+  }
+}
+
+void App::showStarOverlay(const String &line, uint32_t nowMs) {
+  starOverlayVisible_ = true;
+  starOverlayUntilMs_ = nowMs + kStarOverlayMs;
+  applyReaderUiOrientation();
+  display_.renderStatus("Starred", line, currentBookTitle_);
+}
+
+void App::updateStarOverlay(uint32_t nowMs) {
+  if (!starOverlayVisible_ || nowMs < starOverlayUntilMs_) {
+    return;
+  }
+  starOverlayVisible_ = false;
+  if (state_ == AppState::Paused || state_ == AppState::Playing) {
+    renderActiveReader(nowMs);
+  } else if (state_ == AppState::Menu) {
+    renderMenu();
+  }
 }
 
 bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
@@ -1991,6 +2064,9 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     if (tapLike && handlePreviousSentenceTap(event.x, event.y, nowMs)) {
       return;
     }
+    if (tapLike && !previewBrowseMode && handleStarSentenceTap(event.x, event.y, nowMs)) {
+      return;
+    }
     if (tapLike && previewBrowseMode) {
       resetReaderTapTracking();
       contextViewVisible_ = false;
@@ -2297,6 +2373,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::BookmarkPicker) {
     selectedIndex = &bookmarkPickerSelectedIndex_;
     itemCount = bookmarkMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::StarredPicker) {
+    selectedIndex = &starredPickerSelectedIndex_;
+    itemCount = starredMenuItems_.size();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectedIndex = &restartConfirmSelectedIndex_;
     itemCount = RestartConfirmItemCount;
@@ -2424,6 +2503,10 @@ void App::selectMenuItem(uint32_t nowMs) {
     selectBookmarkPickerItem(nowMs);
     return;
   }
+  if (menuScreen_ == MenuScreen::StarredPicker) {
+    selectStarredPickerItem(nowMs);
+    return;
+  }
   if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectRestartConfirmItem(nowMs);
     return;
@@ -2473,6 +2556,9 @@ void App::selectMenuItem(uint32_t nowMs) {
       return;
     case MenuBookmarks:
       openBookmarkPicker();
+      return;
+    case MenuStarred:
+      openStarredPicker();
       return;
     case MenuStats:
       openStatsScreen();
@@ -4030,6 +4116,110 @@ void App::renderBookmarkPicker() {
 }
 
 namespace {
+// Starred picker row layout: Back, then the remove-mode toggle, then one row per
+// saved quote.
+constexpr size_t kStarredPickerBackIndex = 0;
+constexpr size_t kStarredPickerModeIndex = 1;
+constexpr size_t kStarredPickerFirstQuoteIndex = 2;
+}  // namespace
+
+void App::openStarredPicker() {
+  starredQuotes_ = quoteStore_.loadAll();
+  starredMenuItems_.clear();
+  starredMenuItems_.push_back(uiText(UiText::Back));
+  starredMenuItems_.push_back(starredRemoveMode_ ? "Remove: tap to delete"
+                                                 : "Remove: off (tap to jump)");
+
+  for (const quotes::Quote &quote : starredQuotes_) {
+    starredMenuItems_.push_back(quotes::quoteListLabel(quote));
+  }
+
+  if (starredQuotes_.empty()) {
+    starredMenuItems_.push_back("(No starred sentences)");
+  }
+
+  if (starredPickerSelectedIndex_ >= starredMenuItems_.size()) {
+    starredPickerSelectedIndex_ = kStarredPickerModeIndex;
+  }
+  menuScreen_ = MenuScreen::StarredPicker;
+  Serial.printf("[starred-picker] %u quotes\n",
+                static_cast<unsigned int>(starredQuotes_.size()));
+  renderStarredPicker();
+}
+
+void App::selectStarredPickerItem(uint32_t nowMs) {
+  if (starredPickerSelectedIndex_ == kStarredPickerBackIndex ||
+      starredMenuItems_.size() <= 1) {
+    menuScreen_ = MenuScreen::Main;
+    renderMainMenu();
+    return;
+  }
+
+  if (starredPickerSelectedIndex_ == kStarredPickerModeIndex) {
+    starredRemoveMode_ = !starredRemoveMode_;
+    openStarredPicker();
+    return;
+  }
+
+  const size_t quoteRow = starredPickerSelectedIndex_ - kStarredPickerFirstQuoteIndex;
+  if (quoteRow >= starredQuotes_.size()) {
+    renderStarredPicker();  // The empty-state row or a stale index: just redraw.
+    return;
+  }
+
+  const quotes::Quote quote = starredQuotes_[quoteRow];
+
+  if (starredRemoveMode_) {
+    const bool removed = quoteStore_.remove(quote.bookPath, quote.wordIndex);
+    Serial.printf("[starred-picker] remove word=%u %s\n",
+                  static_cast<unsigned int>(quote.wordIndex),
+                  removed ? "removed" : "absent");
+    display_.renderStatus("Starred", removed ? "Removed" : "Already gone", "");
+    delay(700);
+    if (starredPickerSelectedIndex_ > kStarredPickerFirstQuoteIndex) {
+      --starredPickerSelectedIndex_;
+    }
+    openStarredPicker();
+    return;
+  }
+
+  if (!jumpToQuote(quote, nowMs)) {
+    display_.renderStatus("Starred", "Open failed", quote.bookTitle);
+    delay(1200);
+    openStarredPicker();
+  }
+}
+
+bool App::jumpToQuote(const quotes::Quote &quote, uint32_t nowMs) {
+  // Load the quote's book if it is not already the open one, then seek to the
+  // sentence start -- the same path the bookmark picker uses, plus a cross-book
+  // load like the book picker.
+  if (!usingStorageBook_ || currentBookPath_ != quote.bookPath) {
+    const int bookIndex = findBookIndexByPath(quote.bookPath);
+    if (bookIndex < 0) {
+      Serial.printf("[starred-picker] book not found: %s\n", quote.bookPath.c_str());
+      return false;
+    }
+    saveReadingPosition(true);
+    if (!loadBookAtIndex(static_cast<size_t>(bookIndex), nowMs)) {
+      return false;
+    }
+  }
+
+  reader_.seekTo(quote.wordIndex);
+  menuScreen_ = MenuScreen::Main;
+  setState(AppState::Paused, nowMs);
+  saveReadingPosition(true);
+  Serial.printf("[starred-picker] jumped to word=%u in %s\n",
+                static_cast<unsigned int>(quote.wordIndex), quote.bookPath.c_str());
+  return true;
+}
+
+void App::renderStarredPicker() {
+  display_.renderMenu(starredMenuItems_, starredPickerSelectedIndex_);
+}
+
+namespace {
 constexpr const char *kStatsDir = "/rsvp/.stats";
 constexpr const char *kStatsFile = "/rsvp/.stats/stats.json";
 
@@ -5090,6 +5280,8 @@ void App::renderMenu() {
     renderChapterPicker();
   } else if (menuScreen_ == MenuScreen::BookmarkPicker) {
     renderBookmarkPicker();
+  } else if (menuScreen_ == MenuScreen::StarredPicker) {
+    renderStarredPicker();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     renderRestartConfirm();
   } else if (menuScreen_ == MenuScreen::SdCardRepairConfirm) {
@@ -5114,6 +5306,7 @@ void App::renderMainMenu() {
       usingStorageBook_ && !currentBookPath_.isEmpty() && bookProgress_.isFinished(currentBookPath_);
   items.push_back(finished ? "Mark unread" : "Mark finished");
   items.push_back("Bookmarks");
+  items.push_back("Starred");
   items.push_back("Reading stats");
   items.push_back("Books");
   items.push_back("Articles");

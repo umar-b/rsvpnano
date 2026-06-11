@@ -26,6 +26,7 @@ enum class Screen : uint8_t {
   BookPicker,
   ChapterPicker,
   BookmarkPicker,
+  StarredPicker,
   RestartConfirm,
   SdCardRepairConfirm,
   UpdateConfirm,

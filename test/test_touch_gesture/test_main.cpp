@@ -109,6 +109,23 @@ void test_previous_sentence_tap_zone() {
   TEST_ASSERT_FALSE(touchgesture::isPreviousSentenceTap(95, 60));  // at bottom edge (exclusive)
 }
 
+void test_star_sentence_tap_zone() {
+  // Top-left band starting just past the previous-sentence corner: x in
+  // [96,256) and y <= 40. It must never overlap the previous-sentence corner.
+  TEST_ASSERT_TRUE(touchgesture::isStarSentenceTap(96, 0));
+  TEST_ASSERT_TRUE(touchgesture::isStarSentenceTap(255, 40));
+  TEST_ASSERT_FALSE(touchgesture::isStarSentenceTap(95, 0));    // still in prev-sentence zone
+  TEST_ASSERT_FALSE(touchgesture::isStarSentenceTap(256, 40));  // right edge (exclusive)
+  TEST_ASSERT_FALSE(touchgesture::isStarSentenceTap(150, 41));  // below the band
+  // The two top-left zones are mutually exclusive everywhere.
+  for (int x = 0; x < 300; x += 5) {
+    for (int y = 0; y < 80; y += 5) {
+      TEST_ASSERT_FALSE(touchgesture::isStarSentenceTap(x, y) &&
+                        touchgesture::isPreviousSentenceTap(x, y));
+    }
+  }
+}
+
 void test_config_defaults_match_baked_in_constants() {
   // A default-constructed config must reproduce the historical behaviour the
   // no-config overloads were written against.
@@ -191,6 +208,7 @@ int main(void) {
   RUN_TEST(test_footer_metric_tap_zone);
   RUN_TEST(test_battery_badge_tap_zone);
   RUN_TEST(test_previous_sentence_tap_zone);
+  RUN_TEST(test_star_sentence_tap_zone);
   RUN_TEST(test_config_defaults_match_baked_in_constants);
   RUN_TEST(test_config_changes_thresholds);
   RUN_TEST(test_clamp_gesture_config);
