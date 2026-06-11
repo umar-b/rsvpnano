@@ -121,6 +121,23 @@ class DisplayManager {
   void renderLifeScreensaver(const std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
                              uint32_t generation,
                              const std::vector<uint32_t> *dimCells = nullptr);
+  // A text-overlay screensaver (word-rain, DVD-bounce). Each sprite carries a
+  // grid-cell position, a dim level (0 = brightest), and a one-frame "bright"
+  // request. Grid space is columns x rows, the same as the cell savers.
+  struct ScreensaverTextSprite {
+    String text;
+    int16_t cellX = 0;
+    int16_t cellY = 0;
+    uint8_t dim = 0;
+    bool bright = false;
+  };
+  void renderScreensaverText(const std::vector<ScreensaverTextSprite> &sprites, uint16_t columns,
+                             uint16_t rows, uint32_t generation);
+  // The ambient book-cover standby card: a very dim status panel drawn at a
+  // drifted offset for burn-in protection. App owns the content and the drift.
+  void renderBookCoverStandby(const String &title, uint8_t progressPercent,
+                              const String &wordsReadLine, int16_t offsetX, int16_t offsetY,
+                              uint32_t variant);
   void renderFocusTimerScreen(const String &mode, const String &genre, const String &timer,
                               const String &instruction, const String &footer = "",
                               int progressPercent = -1, bool breakAccent = false);

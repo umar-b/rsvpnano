@@ -6,6 +6,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "app/AppState.h"
@@ -110,6 +111,10 @@ class App {
     Maze = 2,
     Voronoi = 3,
     ScreenOff = 6,
+    // Appended above the existing gap; persisted in NVS, never renumber.
+    WordRain = 7,
+    DvdBounce = 8,
+    BookCover = 9,
   };
 
   enum class PauseMode : uint8_t {
@@ -309,6 +314,11 @@ class App {
   void noteUserInput(uint32_t nowMs);
   void cycleIdleStandbyTimeout();
   String idleStandbyLabel() const;
+  String standbyTouchLabel() const;
+  // Words sampled around the current reading position for the word-rain saver;
+  // falls back to an empty list (the saver then uses its built-in words).
+  std::vector<std::string> sampleStandbyWords() const;
+  void renderBookCoverStandby(uint32_t nowMs);
   void loadGestureConfig();
   void cycleGestureSensitivity();
   String gestureSensitivityLabel() const;
@@ -568,8 +578,14 @@ class App {
   // the screensaver preference. Cleared on wake.
   bool standbyScreenOffForced_ = false;
   bool standbyWakeTouchActive_ = false;
+  // Standby touch behaviour: OFF (default) = tap wakes; ON = tap stamps a glider
+  // when the Life saver is active (other savers still wake on tap).
+  bool standbyTouchPlay_ = false;
   uint16_t standbyWakeStartX_ = 0;
   uint16_t standbyWakeStartY_ = 0;
+  // millis() at the most recent standby entry; drives the book-cover burn-in
+  // drift schedule.
+  uint32_t standbyEnteredMs_ = 0;
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
