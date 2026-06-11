@@ -1,7 +1,10 @@
 #include "app/App.h"
 
 #include "app/TouchGesture.h"
+#include "library/LibraryFilter.h"
+#include "library/MenuGesture.h"
 
+#include <esp_random.h>
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <SD_MMC.h>
@@ -174,6 +177,33 @@ constexpr size_t kWifiSettingsCheckNowIndex = 7;
 constexpr size_t kWifiSettingsLastResultIndex = 8;
 
 constexpr size_t kBookPickerBackIndex = 0;
+// Book/Article picker fixed header rows: Back(0), filter cycle(1), Surprise(2),
+// then the (filtered) books start at kBookPickerFirstBookIndex. When the filter
+// matches no books, a single non-selectable empty-state line sits at the first
+// book row instead.
+constexpr size_t kBookPickerFilterIndex = 1;
+constexpr size_t kBookPickerSurpriseIndex = 2;
+constexpr size_t kBookPickerFirstBookIndex = 3;
+
+// Per-book action sheet (opened by a touch-hold on a book row).
+enum BookActionItem : size_t {
+  BookActionBack,
+  BookActionMarkFinished,
+  BookActionDelete,
+  BookActionItemCount,
+};
+constexpr size_t kBookDeleteConfirmHeaderRows = 1;
+enum BookDeleteConfirmItem : size_t {
+  BookDeleteConfirmNo,
+  BookDeleteConfirmYes,
+  BookDeleteConfirmItemCount,
+};
+
+// Menu touch-hold geometry (book-picker row -> action sheet). Mirrors the
+// focus-timer cancel-hold feel; the pure decision lives in library::isHold.
+constexpr uint16_t kMenuHoldMaxDriftPx = 26;
+constexpr uint32_t kMenuHoldMs = 550;
+
 constexpr size_t kChapterPickerBackIndex = 0;
 constexpr size_t kChapterPickerFallbackIndex = 1;
 constexpr size_t kBookmarkPickerBackIndex = 0;
@@ -2078,6 +2108,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     pausedTouch_.lastY = event.y;
     pausedTouch_.startMs = nowMs;
     pausedTouch_.lastMs = nowMs;
+    menuHoldFired_ = false;
     return;
   }
 
@@ -2089,11 +2120,40 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   pausedTouch_.lastY = event.y;
   pausedTouch_.lastMs = nowMs;
 
+  // Touch-hold on a book-picker row -> open the per-book action sheet. Fired
+  // mid-press the moment the threshold is crossed (like the focus-timer cancel
+  // hold). The hold acts on the currently-selected row, matching the picker's
+  // swipe-to-move / tap-to-select model. The pure decision lives in
+  // library::isHold.
+  if (menuScreen_ == MenuScreen::BookPicker && !menuHoldFired_) {
+    library::MenuHoldSample sample;
+    sample.deltaX = static_cast<int>(pausedTouch_.lastX) - static_cast<int>(pausedTouch_.startX);
+    sample.deltaY = static_cast<int>(pausedTouch_.lastY) - static_cast<int>(pausedTouch_.startY);
+    sample.elapsedMs = nowMs - pausedTouch_.startMs;
+    library::MenuHoldConfig holdCfg;
+    holdCfg.maxDriftPx = kMenuHoldMaxDriftPx;
+    holdCfg.holdMs = kMenuHoldMs;
+    if (library::isHold(sample, holdCfg)) {
+      const size_t bookIndex = bookIndexForPickerRow(bookPickerSelectedIndex_);
+      if (bookIndex != static_cast<size_t>(-1)) {
+        menuHoldFired_ = true;
+        pausedTouch_.active = false;
+        openBookActions(bookIndex);
+        return;
+      }
+    }
+  }
+
   if (event.phase != TouchPhase::End) {
     return;
   }
 
   pausedTouch_.active = false;
+
+  if (menuHoldFired_) {
+    menuHoldFired_ = false;
+    return;
+  }
 
   const int deltaX = static_cast<int>(pausedTouch_.lastX) - static_cast<int>(pausedTouch_.startX);
   const int deltaY = static_cast<int>(pausedTouch_.lastY) - static_cast<int>(pausedTouch_.startY);
@@ -2309,6 +2369,12 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
     selectedIndex = &focusTimerGenreSelectedIndex_;
     itemCount = focusTimerGenreMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::BookActions) {
+    selectedIndex = &bookActionSelectedIndex_;
+    itemCount = BookActionItemCount;
+  } else if (menuScreen_ == MenuScreen::BookDeleteConfirm) {
+    selectedIndex = &bookDeleteConfirmSelectedIndex_;
+    itemCount = BookDeleteConfirmItemCount;
   }
 
   if (itemCount == 0) {
@@ -2441,6 +2507,14 @@ void App::selectMenuItem(uint32_t nowMs) {
     return;
   }
   if (menuScreen_ == MenuScreen::FocusTimerSession) {
+    return;
+  }
+  if (menuScreen_ == MenuScreen::BookActions) {
+    selectBookActionItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::BookDeleteConfirm) {
+    selectBookDeleteConfirmItem(nowMs);
     return;
   }
 
@@ -3775,17 +3849,82 @@ String App::typographyTuningValueLabel() const {
   }
 }
 
+namespace {
+// Filter-header label and empty-state line for the picker. Device-only strings
+// (the picker already uses literals like "Books" / "+ Drop mark here"); no
+// UiText keys added so the six-language Localization switches stay untouched.
+const char *libraryFilterLabel(library::LibraryFilter filter) {
+  switch (filter) {
+    case library::LibraryFilter::All:
+      return "Filter: All";
+    case library::LibraryFilter::InProgress:
+      return "Filter: In progress";
+    case library::LibraryFilter::Unread:
+      return "Filter: Unread";
+    case library::LibraryFilter::Finished:
+      return "Filter: Finished";
+  }
+  return "Filter: All";
+}
+
+String libraryEmptyLine(library::EmptyReason reason, bool articles) {
+  const char *kind = articles ? "articles" : "books";
+  switch (reason) {
+    case library::EmptyReason::NoItemsAtAll:
+      return String("No ") + kind + " on card";
+    case library::EmptyReason::NoInProgress:
+      return String("No ") + kind + " in progress";
+    case library::EmptyReason::NoUnread:
+      return String("No unread ") + kind;
+    case library::EmptyReason::NoFinished:
+      return String("No finished ") + kind + " yet";
+    case library::EmptyReason::NotEmpty:
+      break;
+  }
+  return "";
+}
+}  // namespace
+
 void App::openBookPicker(bool articlesOnly) {
+  bookPickerArticles_ = articlesOnly;
+  // Load the last-used filter for this picker type from prefs (raw, defended
+  // against corruption by library::filterFromRaw on read).
+  booksFilterRaw_ = static_cast<uint8_t>(
+      preferences_.getUChar(kPrefLibraryFilterBooks, 0));
+  articlesFilterRaw_ = static_cast<uint8_t>(
+      preferences_.getUChar(kPrefLibraryFilterArticles, 0));
   storage_.refreshBooks();
+  rebuildBookPicker(true);
+  renderBookPicker();
+}
+
+void App::cycleBookPickerFilter() {
+  uint8_t &raw = bookPickerArticles_ ? articlesFilterRaw_ : booksFilterRaw_;
+  raw = static_cast<uint8_t>(
+      library::nextFilter(library::filterFromRaw(raw)));
+  preferences_.putUChar(
+      bookPickerArticles_ ? kPrefLibraryFilterArticles : kPrefLibraryFilterBooks, raw);
+  // Keep the cursor on the filter row so repeated taps keep cycling.
+  rebuildBookPicker(false);
+  bookPickerSelectedIndex_ = kBookPickerFilterIndex;
+  renderBookPicker();
+}
+
+void App::rebuildBookPicker(bool resetSelection) {
+  const library::LibraryFilter filter = library::filterFromRaw(
+      bookPickerArticles_ ? articlesFilterRaw_ : booksFilterRaw_);
+
   bookMenuItems_.clear();
   bookPickerBookIndices_.clear();
   bookMenuItems_.push_back({uiText(UiText::Back), ""});
+  bookMenuItems_.push_back({libraryFilterLabel(filter), ""});
+  bookMenuItems_.push_back({"Surprise me", "Open a random unread item"});
 
   const size_t count = storage_.bookCount();
   std::vector<size_t> sortedBookIndices;
   sortedBookIndices.reserve(count);
   for (size_t i = 0; i < count; ++i) {
-    if (storage_.bookIsArticle(i) != articlesOnly) {
+    if (storage_.bookIsArticle(i) != bookPickerArticles_) {
       continue;
     }
     sortedBookIndices.push_back(i);
@@ -3817,42 +3956,89 @@ void App::openBookPicker(bool articlesOnly) {
                      return false;
                    });
 
+  // Classify each candidate, then keep only those passing the active filter.
+  std::vector<library::BookStatus> statuses;
+  statuses.reserve(sortedBookIndices.size());
   for (size_t bookIndex : sortedBookIndices) {
+    uint8_t percent = 0;
+    const bool hasProgress = bookProgressPercent(bookIndex, percent);
+    const bool finished = bookProgress_.isFinished(storage_.bookPath(bookIndex));
+    statuses.push_back(library::classify(finished, hasProgress, percent));
+  }
+
+  const std::vector<size_t> kept = library::filterIndices(filter, statuses);
+  for (size_t keptIndex : kept) {
+    const size_t bookIndex = sortedBookIndices[keptIndex];
     bookPickerBookIndices_.push_back(bookIndex);
     bookMenuItems_.push_back(libraryItemForBook(bookIndex));
   }
 
-  if (sortedBookIndices.empty()) {
-    Serial.printf("[book-picker] No SD %s available\n", articlesOnly ? "articles" : "books");
+  const library::EmptyReason emptyReason =
+      library::emptyReason(filter, sortedBookIndices.size(), kept.size());
+  if (emptyReason != library::EmptyReason::NotEmpty) {
+    // Non-selectable readable line instead of a blank screen.
+    bookMenuItems_.push_back({libraryEmptyLine(emptyReason, bookPickerArticles_), ""});
+    Serial.printf("[book-picker] empty: %s\n",
+                  libraryEmptyLine(emptyReason, bookPickerArticles_).c_str());
   }
 
   menuScreen_ = MenuScreen::BookPicker;
-  bookPickerSelectedIndex_ = kBookPickerBackIndex;
-  if (usingStorageBook_) {
-    for (size_t row = 0; row < bookPickerBookIndices_.size(); ++row) {
-      if (bookPickerBookIndices_[row] == currentBookIndex_) {
-        bookPickerSelectedIndex_ = row + 1;
-        break;
+  if (resetSelection) {
+    // Land on the current book if it's visible under the filter, else the
+    // first book row, else the filter header.
+    bookPickerSelectedIndex_ = kBookPickerFilterIndex;
+    if (!bookPickerBookIndices_.empty()) {
+      bookPickerSelectedIndex_ = kBookPickerFirstBookIndex;
+      if (usingStorageBook_) {
+        for (size_t row = 0; row < bookPickerBookIndices_.size(); ++row) {
+          if (bookPickerBookIndices_[row] == currentBookIndex_) {
+            bookPickerSelectedIndex_ = kBookPickerFirstBookIndex + row;
+            break;
+          }
+        }
       }
     }
+  } else if (bookPickerSelectedIndex_ >= bookMenuItems_.size()) {
+    bookPickerSelectedIndex_ = kBookPickerFilterIndex;
   }
-  renderBookPicker();
+}
+
+size_t App::bookIndexForPickerRow(size_t row) const {
+  // Header rows (Back/Filter/Surprise) and the empty-state line map to nothing.
+  if (row < kBookPickerFirstBookIndex) {
+    return static_cast<size_t>(-1);
+  }
+  const size_t bookRow = row - kBookPickerFirstBookIndex;
+  if (bookRow >= bookPickerBookIndices_.size()) {
+    return static_cast<size_t>(-1);
+  }
+  return bookPickerBookIndices_[bookRow];
 }
 
 void App::selectBookPickerItem(uint32_t nowMs) {
-  if (bookPickerSelectedIndex_ == kBookPickerBackIndex || bookMenuItems_.size() <= 1) {
+  if (bookPickerSelectedIndex_ == kBookPickerBackIndex) {
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
   }
 
-  const size_t rowIndex = bookPickerSelectedIndex_ - 1;
-  if (rowIndex >= bookPickerBookIndices_.size()) {
+  if (bookPickerSelectedIndex_ == kBookPickerFilterIndex) {
+    cycleBookPickerFilter();
+    return;
+  }
+
+  if (bookPickerSelectedIndex_ == kBookPickerSurpriseIndex) {
+    openSurpriseBook(nowMs);
+    return;
+  }
+
+  const size_t bookIndex = bookIndexForPickerRow(bookPickerSelectedIndex_);
+  if (bookIndex == static_cast<size_t>(-1)) {
+    // Empty-state line or out-of-range -- nothing to open.
     renderBookPicker();
     return;
   }
 
-  const size_t bookIndex = bookPickerBookIndices_[rowIndex];
   saveReadingPosition(true);
   if (!loadBookAtIndex(bookIndex, nowMs)) {
     Serial.println("[book-picker] Failed to load selected book");
@@ -3866,6 +4052,151 @@ void App::selectBookPickerItem(uint32_t nowMs) {
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);
   saveReadingPosition(true);
+}
+
+void App::openSurpriseBook(uint32_t nowMs) {
+  // Surprise ignores the active filter (documented): it scopes to the picker's
+  // Books/Articles set, prefers an UNREAD item, and falls back to any item when
+  // everything has progress -- so the row always opens something.
+  const size_t count = storage_.bookCount();
+  std::vector<size_t> candidates;
+  std::vector<library::BookStatus> statuses;
+  candidates.reserve(count);
+  statuses.reserve(count);
+  for (size_t i = 0; i < count; ++i) {
+    if (storage_.bookIsArticle(i) != bookPickerArticles_) {
+      continue;
+    }
+    uint8_t percent = 0;
+    const bool hasProgress = bookProgressPercent(i, percent);
+    const bool finished = bookProgress_.isFinished(storage_.bookPath(i));
+    candidates.push_back(i);
+    statuses.push_back(library::classify(finished, hasProgress, percent));
+  }
+
+  const size_t pick = library::surprisePick(statuses, esp_random());
+  if (pick == library::kNoPick) {
+    display_.renderStatus("Surprise me",
+                          bookPickerArticles_ ? "No articles on card" : "No books on card", "");
+    delay(1200);
+    renderBookPicker();
+    return;
+  }
+
+  const size_t bookIndex = candidates[pick];
+  saveReadingPosition(true);
+  if (!loadBookAtIndex(bookIndex, nowMs)) {
+    Serial.println("[book-picker] Surprise: failed to load picked book");
+    display_.renderStatus("Book open failed", storage_.bookDisplayName(bookIndex),
+                          "Check serial log");
+    delay(1800);
+    renderBookPicker();
+    return;
+  }
+
+  Serial.printf("[book-picker] surprise opened %s\n", currentBookPath_.c_str());
+  menuScreen_ = MenuScreen::Main;
+  setState(AppState::Paused, nowMs);
+  saveReadingPosition(true);
+}
+
+void App::openBookActions(size_t bookIndex) {
+  bookActionBookIndex_ = bookIndex;
+  bookActionSelectedIndex_ = BookActionMarkFinished;
+  menuScreen_ = MenuScreen::BookActions;
+  renderBookActions();
+}
+
+void App::selectBookActionItem(uint32_t nowMs) {
+  if (bookActionSelectedIndex_ == BookActionBack ||
+      bookActionBookIndex_ == static_cast<size_t>(-1)) {
+    rebuildBookPicker(false);
+    renderBookPicker();
+    return;
+  }
+
+  if (bookActionSelectedIndex_ == BookActionMarkFinished) {
+    const String path = storage_.bookPath(bookActionBookIndex_);
+    if (!path.isEmpty()) {
+      const bool nowFinished = !bookProgress_.isFinished(path);
+      // Orthogonal to saved position -- never reset position here.
+      bookProgress_.setFinished(path, nowFinished);
+      Serial.printf("[book-actions] %s marked %s\n", path.c_str(),
+                    nowFinished ? "finished" : "unread");
+    }
+    rebuildBookPicker(false);
+    renderBookPicker();
+    return;
+  }
+
+  if (bookActionSelectedIndex_ == BookActionDelete) {
+    openBookDeleteConfirm();
+    return;
+  }
+
+  (void)nowMs;
+}
+
+void App::openBookDeleteConfirm() {
+  bookDeleteConfirmSelectedIndex_ = BookDeleteConfirmNo;
+  menuScreen_ = MenuScreen::BookDeleteConfirm;
+  renderBookDeleteConfirm();
+}
+
+void App::selectBookDeleteConfirmItem(uint32_t nowMs) {
+  if (bookDeleteConfirmSelectedIndex_ != BookDeleteConfirmYes ||
+      bookActionBookIndex_ == static_cast<size_t>(-1)) {
+    // Cancelled -- back to the action sheet.
+    menuScreen_ = MenuScreen::BookActions;
+    renderBookActions();
+    return;
+  }
+
+  const size_t targetIndex = bookActionBookIndex_;
+  const String targetPath = storage_.bookPath(targetIndex);
+  const String targetTitle = storage_.bookDisplayName(targetIndex);
+  const bool deletingCurrent = usingStorageBook_ && targetIndex == currentBookIndex_;
+
+  const String removed = storage_.deleteBook(targetIndex);
+  if (removed.isEmpty()) {
+    display_.renderStatus("Delete book", targetTitle.c_str(), "Delete failed");
+    delay(1500);
+    menuScreen_ = MenuScreen::BookActions;
+    renderBookActions();
+    return;
+  }
+
+  // Forget all per-book NVS state for the deleted book.
+  bookProgress_.clearBook(targetPath);
+
+  if (deletingCurrent) {
+    // Unload gracefully: drop the in-memory book and clear the saved path so a
+    // future boot doesn't try to reopen a gone file.
+    activeBookStore_.close();
+    reader_.clearLoadedBook(nowMs);
+    usingStorageBook_ = false;
+    currentBookPath_ = "";
+    currentBookTitle_ = "";
+    currentBookIndex_ = 0;
+    chapterMarkers_.clear();
+    paragraphStarts_.clear();
+    invalidateTimeEstimateCache();
+    preferences_.remove(kPrefBookPath);
+    Serial.println("[book-actions] deleted the currently loaded book; unloaded");
+  } else if (usingStorageBook_) {
+    // Storage indices shifted after the refresh -- re-resolve the current book.
+    const int refreshed = findBookIndexByPath(currentBookPath_);
+    if (refreshed >= 0) {
+      currentBookIndex_ = static_cast<size_t>(refreshed);
+    }
+  }
+
+  display_.renderStatus("Delete book", targetTitle.c_str(), "Deleted");
+  delay(1000);
+
+  bookActionBookIndex_ = static_cast<size_t>(-1);
+  rebuildBookPicker(true);
+  renderBookPicker();
 }
 
 void App::toggleCurrentBookFinished(uint32_t nowMs) {
@@ -5100,9 +5431,39 @@ void App::renderMenu() {
     renderFocusTimerGenres();
   } else if (menuScreen_ == MenuScreen::FocusTimerSession) {
     renderFocusTimerSession();
+  } else if (menuScreen_ == MenuScreen::BookActions) {
+    renderBookActions();
+  } else if (menuScreen_ == MenuScreen::BookDeleteConfirm) {
+    renderBookDeleteConfirm();
   } else {
     renderMainMenu();
   }
+}
+
+void App::renderBookActions() {
+  const String title = (bookActionBookIndex_ == static_cast<size_t>(-1))
+                           ? String("Book")
+                           : storage_.bookDisplayName(bookActionBookIndex_);
+  const bool finished = bookActionBookIndex_ != static_cast<size_t>(-1) &&
+                        bookProgress_.isFinished(storage_.bookPath(bookActionBookIndex_));
+  std::vector<DisplayManager::LibraryItem> items;
+  items.reserve(BookActionItemCount);
+  items.push_back({uiText(UiText::Back), title});
+  items.push_back({finished ? "Mark unfinished" : "Mark finished", ""});
+  items.push_back({"Delete...", ""});
+  display_.renderLibrary(items, bookActionSelectedIndex_);
+}
+
+void App::renderBookDeleteConfirm() {
+  const String title = (bookActionBookIndex_ == static_cast<size_t>(-1))
+                           ? String("this book")
+                           : storage_.bookDisplayName(bookActionBookIndex_);
+  std::vector<String> items;
+  items.reserve(BookDeleteConfirmItemCount + kBookDeleteConfirmHeaderRows);
+  items.push_back(String("Delete ") + title + "?");
+  items.push_back("No, keep it");
+  items.push_back("Yes, delete");
+  display_.renderMenu(items, bookDeleteConfirmSelectedIndex_ + kBookDeleteConfirmHeaderRows);
 }
 
 void App::renderMainMenu() {

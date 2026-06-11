@@ -139,3 +139,19 @@ void BookProgress::clearBookmarks(const String &path) {
     prefs_.remove(key.c_str());
   }
 }
+
+void BookProgress::clearBook(const String &path) {
+  if (path.isEmpty()) {
+    return;
+  }
+  const String keys[] = {
+      bookprogress::positionKey(path),  bookprogress::wordCountKey(path),
+      bookprogress::recentKey(path),    bookprogress::finishedKey(path),
+      bookprogress::bookmarkKey(path),
+  };
+  for (const String &key : keys) {
+    if (prefs_.isKey(key.c_str())) {
+      prefs_.remove(key.c_str());
+    }
+  }
+}

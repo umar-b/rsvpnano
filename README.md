@@ -220,6 +220,13 @@ Swipe up or down to move through the menu. Tap to select. Press `PWR` to go back
 
 Both pages show readable titles, progress, and saved position where available. Select an item to load it into the reader.
 
+Each page also has, above the list:
+
+- A `Filter:` row that cycles `All` -> `In progress` -> `Unread` -> `Finished` each time you tap it. The choice is remembered separately for Books and Articles. When a filter matches nothing, the page shows a readable line (for example `No finished books yet`) rather than an empty list.
+- A `Surprise me` row that opens a random item. It prefers an unread item and falls back to any item when everything has been started. `Surprise me` deliberately ignores the active filter, so it always opens something.
+
+Press and hold a book row to open a small per-book menu with `Mark finished` / `Mark unfinished` and `Delete...`. Delete asks for confirmation, then removes the file and its index sidecars from the card and clears its saved progress; if you delete the book you are currently reading, the device unloads it and returns to the list.
+
 ### Chapters
 
 The `Chapters` page lists chapter markers from the current book when available. Select a chapter to jump to it. Press `PWR` to return to the main menu.

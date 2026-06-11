@@ -275,9 +275,22 @@ class App {
   String uiText(UiText key) const;
   void openBookPicker(bool articlesOnly = false);
   void selectBookPickerItem(uint32_t nowMs);
+  size_t bookIndexForPickerRow(size_t row) const;
   void openChapterPicker();
   void selectChapterPickerItem(uint32_t nowMs);
   void toggleCurrentBookFinished(uint32_t nowMs);
+  // Library features: filter cycling, "Surprise me", per-book action sheet +
+  // delete confirmation. The pure decisions live in src/library; these own the
+  // Arduino/NVS/UI glue.
+  void cycleBookPickerFilter();
+  void rebuildBookPicker(bool resetSelection);
+  void openSurpriseBook(uint32_t nowMs);
+  void openBookActions(size_t bookIndex);
+  void selectBookActionItem(uint32_t nowMs);
+  void renderBookActions();
+  void openBookDeleteConfirm();
+  void selectBookDeleteConfirmItem(uint32_t nowMs);
+  void renderBookDeleteConfirm();
   void openBookmarkPicker();
   void selectBookmarkPickerItem(uint32_t nowMs);
   void renderBookmarkPicker();
@@ -499,6 +512,18 @@ class App {
   std::vector<DisplayManager::LibraryItem> wifiNetworkMenuItems_;
   std::vector<DisplayManager::LibraryItem> bookMenuItems_;
   std::vector<size_t> bookPickerBookIndices_;
+  // Library-feature state. Whether the picker is showing Articles vs Books
+  // (so the filter persists to the right pref and Surprise scopes correctly),
+  // the active filter, the per-picker selection inside the action sheet, and
+  // the book index a held row / action sheet is acting on. uint8_t filter
+  // values are persisted raw; see library::LibraryFilter.
+  bool bookPickerArticles_ = false;
+  uint8_t booksFilterRaw_ = 0;
+  uint8_t articlesFilterRaw_ = 0;
+  size_t bookActionSelectedIndex_ = 0;
+  size_t bookDeleteConfirmSelectedIndex_ = 0;
+  size_t bookActionBookIndex_ = static_cast<size_t>(-1);
+  bool menuHoldFired_ = false;
   std::vector<String> chapterMenuItems_;
   std::vector<uint32_t> bookmarkMenuWordIndices_;
   std::vector<String> bookmarkMenuItems_;

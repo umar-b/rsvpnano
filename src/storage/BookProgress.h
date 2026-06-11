@@ -89,6 +89,12 @@ class BookProgress {
   bool removeBookmark(const String &path, uint32_t wordIndex);  // false if absent
   void clearBookmarks(const String &path);
 
+  // Forget every per-book NVS key for `path`: saved position, word count,
+  // recent-sequence, finished flag, and bookmarks. Used when a book is deleted
+  // from the card so no stale progress lingers. The shared legacy single-slot
+  // index and the recent-sequence counter are global and left untouched.
+  void clearBook(const String &path);
+
  private:
   uint32_t nextSequence();
   Preferences &prefs_;

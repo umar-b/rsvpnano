@@ -13,6 +13,9 @@ constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
 constexpr const char *kPrefLegacyWordIndex = "word";
 constexpr const char *kPrefRecentSeq = "seq";
+// Last-used library filter per picker (raw library::LibraryFilter value).
+constexpr const char *kPrefLibraryFilterBooks = "lib_fltb";
+constexpr const char *kPrefLibraryFilterArticles = "lib_flta";
 
 // Reader + display.
 constexpr const char *kPrefWpm = "wpm";

@@ -31,6 +31,11 @@ enum class Screen : uint8_t {
   UpdateConfirm,
   FocusTimerGenres,
   FocusTimerSession,
+  // Per-book action sheet opened by a touch-hold on a book-picker row, and its
+  // delete confirmation. Appended at the end -- Screen values are compared,
+  // never serialised, so order of earlier entries is unchanged.
+  BookActions,
+  BookDeleteConfirm,
 };
 
 // The four screens that share the settings list + settingsSelectedIndex_. This
