@@ -28,6 +28,11 @@ String wordCountKey(const String &path) { return keyWithPrefix('c', path); }
 String recentKey(const String &path) { return keyWithPrefix('r', path); }
 String finishedKey(const String &path) { return keyWithPrefix('f', path); }
 String bookmarkKey(const String &path) { return keyWithPrefix('k', path); }
+String wpmKey(const String &path) { return keyWithPrefix('w', path); }
+
+uint16_t resolveBookWpm(uint16_t savedBookWpm, uint16_t globalFallbackWpm) {
+  return savedBookWpm != kNoSavedWpm ? savedBookWpm : globalFallbackWpm;
+}
 
 std::vector<uint8_t> encodeBookmarks(const std::vector<uint32_t> &wordIndices) {
   std::vector<uint8_t> bytes;

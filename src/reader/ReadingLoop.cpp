@@ -4,6 +4,7 @@
 #include <cctype>
 #include <utility>
 
+#include "reader/RampIn.h"
 #include "text/LatinText.h"
 
 namespace {
@@ -139,7 +140,12 @@ void ReadingLoop::clearLoadedBook(uint32_t nowMs) {
   setCurrentWordFromIndex();
 }
 
-void ReadingLoop::start(uint32_t nowMs) { lastAdvanceMs_ = nowMs; }
+void ReadingLoop::start(uint32_t nowMs) {
+  lastAdvanceMs_ = nowMs;
+  // Every transition into playing restarts the ramp so the first words after a
+  // resume ease back up to the set WPM.
+  wordsSinceResume_ = 0;
+}
 
 bool ReadingLoop::update(uint32_t nowMs, bool allowCatchUp) {
   bool changed = false;
@@ -155,6 +161,9 @@ bool ReadingLoop::update(uint32_t nowMs, bool allowCatchUp) {
     if (!advance(1)) {
       break;
     }
+    if (wordsSinceResume_ < rampin::kRampWords) {
+      ++wordsSinceResume_;
+    }
     changed = true;
   }
 
@@ -169,6 +178,19 @@ uint16_t ReadingLoop::wpm() const { return wpm_; }
 
 uint32_t ReadingLoop::wordIntervalMs() const { return 60000UL / wpm_; }
 
+uint32_t ReadingLoop::rampScaledIntervalMs() const {
+  const uint32_t baseIntervalMs = wordIntervalMs();
+  if (baseIntervalMs == 0) {
+    return 0;
+  }
+  const uint16_t scalePercent =
+      rampin::intervalScalePercent(wordsSinceResume_, rampInEnabled_);
+  if (scalePercent == 100) {
+    return baseIntervalMs;
+  }
+  return (baseIntervalMs * static_cast<uint32_t>(scalePercent)) / 100UL;
+}
+
 uint32_t ReadingLoop::currentWordDurationMs() const {
   bool nextWordStartsLowercase = false;
   const size_t nextIndex = currentIndex_ + 1;
@@ -178,7 +200,16 @@ uint32_t ReadingLoop::currentWordDurationMs() const {
     nextWordStartsLowercase = wordpacing::startsWithLowercaseLetter(String(kDemoWords[nextIndex]));
   }
 
-  return wordpacing::durationForWord(currentWord_, nextWordStartsLowercase, wordIntervalMs(), pacingConfig_);
+  // The pacing bonus is independent of the base interval (and of the ramp), so
+  // apply the ramp only to the base interval and add the unscaled bonus. This
+  // keeps the per-word pacing bonus -- and the time-estimate cache built from
+  // it -- ramp-independent.
+  const uint32_t scaledBaseMs = rampScaledIntervalMs();
+  if (scaledBaseMs == 0) {
+    return 0;
+  }
+  return scaledBaseMs +
+         wordpacing::bonusMsForWord(currentWord_, nextWordStartsLowercase, pacingConfig_);
 }
 
 uint32_t ReadingLoop::wordPacingBonusMsAt(size_t index) const {
@@ -314,6 +345,10 @@ void ReadingLoop::setPacingConfig(const PacingConfig &config) {
 }
 
 const ReadingLoop::PacingConfig &ReadingLoop::pacingConfig() const { return pacingConfig_; }
+
+void ReadingLoop::setRampInEnabled(bool enabled) { rampInEnabled_ = enabled; }
+
+bool ReadingLoop::rampInEnabled() const { return rampInEnabled_; }
 
 bool ReadingLoop::advance(size_t steps) {
   const size_t count = wordCount();

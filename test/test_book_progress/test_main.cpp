@@ -63,6 +63,28 @@ void test_progress_percent_clamps_overshoot() {
   TEST_ASSERT_EQUAL_UINT8(100, pct);
 }
 
+void test_wpm_key_format_and_distinct_prefix() {
+  const String path = "/books/books/moby.rsvp";
+  const String wpm = bookprogress::wpmKey(path);
+  // "w" + 8 hex chars = 9, within the 15-char NVS limit.
+  TEST_ASSERT_EQUAL_UINT32(9, wpm.length());
+  TEST_ASSERT_EQUAL('w', wpm[0]);
+  // Same 8-hex suffix as the other per-book keys, distinct prefix from each.
+  TEST_ASSERT_EQUAL_STRING(bookprogress::positionKey(path).substring(1).c_str(),
+                           wpm.substring(1).c_str());
+  TEST_ASSERT_TRUE(bookprogress::wpmKey(path) != bookprogress::positionKey(path));
+  TEST_ASSERT_TRUE(bookprogress::wpmKey(path) != bookprogress::wordCountKey(path));
+  TEST_ASSERT_TRUE(bookprogress::wpmKey(path) != bookprogress::bookmarkKey(path));
+  TEST_ASSERT_TRUE(bookprogress::wpmKey("/a.rsvp") != bookprogress::wpmKey("/b.rsvp"));
+}
+
+void test_resolve_book_wpm_prefers_book_override() {
+  // A saved per-book WPM wins over the global fallback.
+  TEST_ASSERT_EQUAL_UINT16(450, bookprogress::resolveBookWpm(450, 300));
+  // No override (sentinel) falls back to the global pref.
+  TEST_ASSERT_EQUAL_UINT16(300, bookprogress::resolveBookWpm(bookprogress::kNoSavedWpm, 300));
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_hash_is_deterministic_and_path_sensitive);
@@ -71,5 +93,7 @@ int main(void) {
   RUN_TEST(test_distinct_paths_yield_distinct_keys);
   RUN_TEST(test_progress_percent_math);
   RUN_TEST(test_progress_percent_clamps_overshoot);
+  RUN_TEST(test_wpm_key_format_and_distinct_prefix);
+  RUN_TEST(test_resolve_book_wpm_prefers_book_override);
   return UNITY_END();
 }

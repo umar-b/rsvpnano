@@ -536,6 +536,41 @@ void test_word_pacing_bonus_at_out_of_range_returns_zero(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Ramp-in after resume
+// ---------------------------------------------------------------------------
+
+void test_ramp_in_off_by_default_until_start(void) {
+  // A reader that has not started playing runs at full speed (ramp finished).
+  ReadingLoop r = makeReader(300, {"alpha", "beta", "gamma"});
+  TEST_ASSERT_EQUAL_UINT32(200u, r.currentWordDurationMs());  // base 200, no bonus
+}
+
+void test_ramp_in_slows_first_word_after_start(void) {
+  ReadingLoop r = makeReader(300, {"alpha", "beta", "gamma"});
+  r.setRampInEnabled(true);
+  r.start(0);  // resume -> ramp begins
+  // First word after resume is slower than the base 200 ms interval.
+  TEST_ASSERT_GREATER_THAN_UINT32(200u, r.currentWordDurationMs());
+}
+
+void test_ramp_in_disabled_keeps_full_speed_after_start(void) {
+  ReadingLoop r = makeReader(300, {"alpha", "beta", "gamma"});
+  r.setRampInEnabled(false);
+  r.start(0);
+  TEST_ASSERT_EQUAL_UINT32(200u, r.currentWordDurationMs());
+}
+
+void test_ramp_in_preserves_pacing_bonus(void) {
+  // Ramp scales only the base interval; the per-word pacing bonus is unchanged,
+  // so the time-estimate cache (built from wordPacingBonusMsAt) stays correct.
+  ReadingLoop r = makeReader(300, {"information.", "Then"});
+  const uint32_t bonusBefore = r.wordPacingBonusMsAt(0);
+  r.setRampInEnabled(true);
+  r.start(0);
+  TEST_ASSERT_EQUAL_UINT32(bonusBefore, r.wordPacingBonusMsAt(0));
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -609,6 +644,11 @@ int main(void) {
   RUN_TEST(test_word_pacing_bonus_at_is_invariant_to_wpm);
   RUN_TEST(test_word_pacing_bonus_plus_interval_equals_current_duration);
   RUN_TEST(test_word_pacing_bonus_at_out_of_range_returns_zero);
+
+  RUN_TEST(test_ramp_in_off_by_default_until_start);
+  RUN_TEST(test_ramp_in_slows_first_word_after_start);
+  RUN_TEST(test_ramp_in_disabled_keeps_full_speed_after_start);
+  RUN_TEST(test_ramp_in_preserves_pacing_bonus);
 
   return UNITY_END();
 }

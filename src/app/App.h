@@ -279,6 +279,10 @@ class App {
   String typographyPreviewSampleAt(size_t index) const;
   void rebuildSettingsMenuItems();
   void applyPacingSettings();
+  // Persist a WPM change: always update the global kPrefWpm fallback, and when a
+  // Book is loaded also store it as that book's per-book WPM override so the
+  // book resumes at its own speed next time.
+  void persistCurrentWpm();
   void maybeAutoCheckForUpdates(uint32_t nowMs);
   bool startBackgroundOtaCheck(const OtaUpdater::Config &config);
   static void otaCheckTask(void *params);
@@ -484,8 +488,21 @@ class App {
   bool ensureCurrentBookWordAvailable(uint32_t nowMs);
   void handleCurrentBookReadFailure(uint32_t nowMs, const char *detail);
   void renderReaderWord();
+  // The display text for the current word, accounting for long-word splitting:
+  // when the current word is being shown as two sub-frames, returns the active
+  // sub-frame ("hyphen-" or the remainder); otherwise the whole word. Also
+  // (re)initialises the split-frame state for the current word/duration.
+  String currentReaderDisplayWord();
+  // Advance the split sub-frame timer while Playing; returns true if the
+  // visible sub-frame changed and the word needs re-rendering.
+  bool updateWordSplitFrame(uint32_t nowMs);
+  void resetWordSplitFrame();
   void renderContextPreview();
   void renderWpmFeedback(uint32_t nowMs);
+  // The whole-book reading-time delta caused by a WPM change, formatted for the
+  // feedback overlay (e.g. "-14 min"), or "" when the estimate cache is
+  // invalid. previousWpm is the speed before the change just applied.
+  String wpmChangeConsequenceLabel(uint16_t previousWpm) const;
   size_t phantomBeforeCharTarget() const;
   size_t phantomAfterCharTarget() const;
   String collectPhantomBeforeText(size_t currentIndex, size_t charTarget) const;
@@ -627,6 +644,7 @@ class App {
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;
   uint16_t pacingPunctuationDelayMs_ = 200;
+  uint16_t pacingClausePauseDelayMs_ = 100;  // device default: half of punctuation
   size_t typographyTuningSelectedIndex_ = 1;
   size_t typographyPreviewSampleIndex_ = 0;
   // Book-sourced typography preview samples; empty -> use the canned samples.
@@ -688,6 +706,10 @@ class App {
   String pendingUpdateCurrentVersion_;
   String pendingUpdateNewVersion_;
   String batteryLabel_;
+  // The whole-book reading-time delta to show under the WPM feedback overlay,
+  // captured at the moment WPM changes and held while the overlay is up. Empty
+  // when the time-estimate cache was invalid.
+  String pendingWpmConsequenceLabel_;
   TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
@@ -730,6 +752,16 @@ class App {
   bool pendingBootBookLoad_ = false;
   bool pendingBootBookLegacyFallback_ = false;
   bool phantomWordsEnabled_ = true;
+  bool rampInEnabled_ = true;        // ease the first words after a resume up to WPM
+  bool pauseContextEnabled_ = false;  // show surrounding sentence while Paused
+  // Long-word splitting: the current word may render as two sequential
+  // sub-frames ("hyphen-" then "ation"). The reader's word index is unchanged;
+  // these track which sub-frame is showing and when to swap. -1 / inactive
+  // means the current word is not split.
+  bool wordSplitActive_ = false;
+  bool wordSplitShowingSecond_ = false;
+  size_t wordSplitWordIndex_ = static_cast<size_t>(-1);
+  uint32_t wordSplitFirstDurationMs_ = 0;
   bool readerBatteryVisibleWhilePlaying_ = true;
   bool readerChapterVisibleWhilePlaying_ = false;
   bool readerProgressVisibleWhilePlaying_ = false;
