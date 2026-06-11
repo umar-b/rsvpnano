@@ -21,6 +21,7 @@
 #include "input/TouchHandler.h"
 #include "motion/FlickDetector.h"
 #include "motion/StandbyDecider.h"
+#include "motion/TiltScrub.h"
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
@@ -236,6 +237,12 @@ class App {
   void openTypographyTuning();
   void selectTypographyTuningItem(uint32_t nowMs);
   void cycleTypographyPreviewSample(int direction);
+  // Refresh the typography preview samples from the loaded book (real sentences
+  // near the saved position), falling back to the canned samples when no book is
+  // loaded or extraction fails.
+  void refreshTypographyPreviewSamples();
+  size_t typographyPreviewSampleCount() const;
+  String typographyPreviewSampleAt(size_t index) const;
   void rebuildSettingsMenuItems();
   void applyPacingSettings();
   void maybeAutoCheckForUpdates(uint32_t nowMs);
@@ -367,6 +374,7 @@ class App {
   void renderFocusTimerGenres();
   void renderFocusTimerSession();
   void renderActiveReader(uint32_t nowMs);
+  void applyBurnInJitter(uint32_t nowMs);
   bool updateChapterTransition(uint32_t nowMs);
   bool maybeStartChapterTransition(size_t previousWordIndex, size_t currentWordIndex,
                                    uint32_t nowMs);
@@ -436,6 +444,10 @@ class App {
   // samples and context, and executes its verdicts. The flick detector shares
   // the sample stream: a sharp flick rewinds to the previous sentence.
   void updateStandbyDecision(uint32_t nowMs);
+  // Tilt-to-scrub: while Paused, roll the device to scrub through words at a
+  // rate set by the roll angle, showing the context preview like touch scrub.
+  // Fed from the same accel stream; suppressed while another gesture owns it.
+  void updateTiltScrub(uint32_t nowMs, float x, float y, float z, bool suppressed);
   motion::StandbyContext standbyContext() const;
   void rewindToPreviousSentence(uint32_t nowMs);
 
@@ -450,6 +462,9 @@ class App {
   uint32_t imuShortcutLastPollMs_ = 0;
   motion::StandbyDecider standbyDecider_;
   motion::FlickDetector flickDetector_;
+  motion::TiltScrub tiltScrub_;
+  bool tiltScrubEnabled_ = false;
+  uint32_t tiltScrubLastSampleMs_ = 0;
   ReadingLoop reader_;
   ButtonHandler button_;
   ButtonHandler powerButton_;
@@ -523,6 +538,8 @@ class App {
   uint16_t pacingPunctuationDelayMs_ = 200;
   size_t typographyTuningSelectedIndex_ = 1;
   size_t typographyPreviewSampleIndex_ = 0;
+  // Book-sourced typography preview samples; empty -> use the canned samples.
+  std::vector<String> typographyPreviewSamples_;
   MenuScreen menuScreen_ = MenuScreen::Main;
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
   QueueHandle_t otaCheckQueue_ = nullptr;

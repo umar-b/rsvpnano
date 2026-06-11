@@ -15,9 +15,12 @@
 
 #include "audio/Jingle.h"
 #include "board/BoardConfig.h"
+#include "display/BurnInJitter.h"
+#include "motion/TiltScrub.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 #include "standby/BookCoverDrift.h"
+#include "text/PreviewSamples.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
@@ -162,6 +165,7 @@ constexpr size_t kSettingsDisplayReaderChapterIndex = 14;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 15;
 constexpr size_t kSettingsDisplayLanguageIndex = 16;
 constexpr size_t kSettingsDisplayMotionPauseIndex = 17;
+constexpr size_t kSettingsDisplayTiltScrubIndex = 18;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -481,6 +485,7 @@ void App::begin() {
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
+  tiltScrubEnabled_ = preferences_.getBool(kPrefTiltScrub, tiltScrubEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -917,12 +922,14 @@ void App::updateStandbyDecision(uint32_t nowMs) {
   const motion::StandbyContext context = standbyContext();
 
   // Poll the sensor on its own cadence; between polls (or with the sensor off
-  // or absent) the decider still ticks so the idle timeout keeps running.
+  // or absent) the decider still ticks so the idle timeout keeps running. Either
+  // motion gestures (face-down pause / flick) or tilt-to-scrub needing the
+  // stream is enough to poll.
   bool sampled = false;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
-  if (imuShortcutsEnabled_ && imuShortcutSensorReady_ &&
+  if ((imuShortcutsEnabled_ || tiltScrubEnabled_) && imuShortcutSensorReady_ &&
       nowMs - imuShortcutLastPollMs_ >= kImuShortcutPollMs) {
     imuShortcutLastPollMs_ = nowMs;
     sampled = imuShortcutImu_.readAccel(x, y, z);
@@ -931,13 +938,18 @@ void App::updateStandbyDecision(uint32_t nowMs) {
   motion::StandbyVerdict verdict;
   if (sampled) {
     const bool reading = state_ == AppState::Playing || state_ == AppState::Paused;
+    bool flicked = false;
     if (flickDetector_.updateWithSample(nowMs, x, y, z, reading)) {
       Serial.println("[motion] flick -> rewind sentence");
       noteUserInput(nowMs);  // flick navigation is activity for the idle timer
       rewindToPreviousSentence(nowMs);
+      flicked = true;
     }
+    updateTiltScrub(nowMs, x, y, z, flicked);
     verdict = standbyDecider_.updateWithSample(nowMs, x, y, z, context);
   } else {
+    // No sample this tick: hold the tilt gesture idle so it cannot drift.
+    updateTiltScrub(nowMs, 0.0f, 0.0f, 0.0f, true);
     verdict = standbyDecider_.update(nowMs, context);
   }
 
@@ -954,6 +966,44 @@ void App::updateStandbyDecision(uint32_t nowMs) {
       break;
     case motion::StandbyVerdict::Kind::None:
       break;
+  }
+}
+
+void App::updateTiltScrub(uint32_t nowMs, float x, float y, float z, bool suppressed) {
+  // Tilt-to-scrub is live only while Paused in the reader. It must never fight
+  // the other gestures: a touch in progress, a flick this tick, the focus timer
+  // or a menu (both Menu state, so the Paused gate already excludes them), or
+  // scroll-mode browsing all suppress it.
+  const bool eligible = tiltScrubEnabled_ && imuShortcutSensorReady_ &&
+                        state_ == AppState::Paused && !pausedTouch_.active &&
+                        !scrollModeEnabled() && !suppressed;
+
+  const uint32_t dtMs = nowMs - tiltScrubLastSampleMs_;
+  tiltScrubLastSampleMs_ = nowMs;
+
+  const bool wasActive = tiltScrub_.active();
+  tiltScrub_.updateWithSample(x, y, z, dtMs, eligible);
+  const bool nowActive = tiltScrub_.active();
+
+  if (nowActive && !wasActive) {
+    // Gesture engaged: anchor the scrub baseline like a touch-scrub Start.
+    invalidateContextPreviewWindow();
+    pausedTouch_.startWordIndex = reader_.currentIndex();
+    pausedTouch_.gestureStepsApplied = 0;
+    noteUserInput(nowMs);
+  }
+
+  if (nowActive) {
+    applyScrubTarget(tiltScrub_.steps(), nowMs);
+    noteUserInput(nowMs);  // active tilt counts as activity for the idle timer
+    return;
+  }
+
+  if (wasActive && !nowActive) {
+    // Rolled back to level: finish like a released scrub gesture.
+    saveReadingPosition(true);
+    tiltScrub_.reset();
+    noteUserInput(nowMs);
   }
 }
 
@@ -1263,6 +1313,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
+  tiltScrubEnabled_ = preferences_.getBool(kPrefTiltScrub, tiltScrubEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -2852,6 +2903,15 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayTiltScrubIndex:
+        if (imuShortcutSensorReady_) {
+          tiltScrubEnabled_ = !tiltScrubEnabled_;
+          preferences_.putBool(kPrefTiltScrub, tiltScrubEnabled_);
+          tiltScrub_.reset();
+        }
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -3355,8 +3415,53 @@ void App::openTypographyTuning() {
   if (typographyTuningSelectedIndex_ == TypographyTuningBack) {
     typographyTuningSelectedIndex_ = TypographyTuningFontSize;
   }
+  refreshTypographyPreviewSamples();
+  typographyPreviewSampleIndex_ = 0;
   menuScreen_ = MenuScreen::TypographyTuning;
   renderTypographyTuning();
+}
+
+void App::refreshTypographyPreviewSamples() {
+  typographyPreviewSamples_.clear();
+
+  const size_t wordCount = reader_.wordCount();
+  if (!usingStorageBook_ || wordCount == 0) {
+    return;  // No book -> canned samples.
+  }
+
+  // Pull a window of real words around the saved position and stitch them into
+  // whole sentences via the pure extractor (same sentence convention the reader
+  // uses for sentence rewind). A little lead-in so the first sentence is whole.
+  constexpr size_t kPreviewLeadWords = 8;
+  constexpr size_t kPreviewWindowWords = 80;
+  const size_t current = std::min(reader_.currentIndex(), wordCount - 1);
+  const size_t start = current > kPreviewLeadWords ? current - kPreviewLeadWords : 0;
+  const size_t end = std::min(wordCount, start + kPreviewWindowWords);
+
+  std::vector<String> window;
+  window.reserve(end - start);
+  for (size_t i = start; i < end; ++i) {
+    window.push_back(reader_.wordAt(i));
+  }
+
+  previewsamples::Config config;
+  config.maxSentences = 5;
+  typographyPreviewSamples_ = previewsamples::extractSentences(window, config);
+}
+
+size_t App::typographyPreviewSampleCount() const {
+  return typographyPreviewSamples_.empty() ? kTypographyPreviewWordCount
+                                           : typographyPreviewSamples_.size();
+}
+
+String App::typographyPreviewSampleAt(size_t index) const {
+  if (typographyPreviewSamples_.empty()) {
+    if (kTypographyPreviewWordCount == 0) {
+      return String();
+    }
+    return String(kTypographyPreviewWords[index % kTypographyPreviewWordCount]);
+  }
+  return typographyPreviewSamples_[index % typographyPreviewSamples_.size()];
 }
 
 void App::selectTypographyTuningItem(uint32_t nowMs) {
@@ -3429,15 +3534,16 @@ void App::selectTypographyTuningItem(uint32_t nowMs) {
 }
 
 void App::cycleTypographyPreviewSample(int direction) {
-  if (kTypographyPreviewWordCount == 0 || direction == 0) {
+  const size_t count = typographyPreviewSampleCount();
+  if (count == 0 || direction == 0) {
     return;
   }
 
   const int current = static_cast<int>(typographyPreviewSampleIndex_);
   int next = current + direction;
   if (next < 0) {
-    next = static_cast<int>(kTypographyPreviewWordCount) - 1;
-  } else if (next >= static_cast<int>(kTypographyPreviewWordCount)) {
+    next = static_cast<int>(count) - 1;
+  } else if (next >= static_cast<int>(count)) {
     next = 0;
   }
   typographyPreviewSampleIndex_ = static_cast<size_t>(next);
@@ -3479,6 +3585,9 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(
         String("Motion gestures: ") +
         (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
+    settingsMenuItems_.push_back(
+        String("Tilt to scrub: ") +
+        (imuShortcutSensorReady_ ? onOffLabel(tiltScrubEnabled_) : String("No sensor")));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());
@@ -5450,12 +5559,13 @@ void App::renderSettings() {
 }
 
 void App::renderTypographyTuning() {
-  if (kTypographyPreviewWordCount == 0) {
+  const size_t sampleCount = typographyPreviewSampleCount();
+  if (sampleCount == 0) {
     display_.renderStatus(uiText(UiText::Typography), uiText(UiText::NoSamples), "");
     return;
   }
 
-  if (typographyPreviewSampleIndex_ >= kTypographyPreviewWordCount) {
+  if (typographyPreviewSampleIndex_ >= sampleCount) {
     typographyPreviewSampleIndex_ = 0;
   }
   if (typographyTuningSelectedIndex_ >= TypographyTuningItemCount) {
@@ -5463,16 +5573,17 @@ void App::renderTypographyTuning() {
   }
 
   const size_t index = typographyPreviewSampleIndex_;
-  const size_t beforeIndex =
-      index == 0 ? kTypographyPreviewWordCount - 1 : index - 1;
-  const size_t afterIndex =
-      (index + 1 >= kTypographyPreviewWordCount) ? 0 : index + 1;
-  const String beforeText = phantomWordsEnabled_ ? kTypographyPreviewWords[beforeIndex] : "";
-  const String afterText = phantomWordsEnabled_ ? kTypographyPreviewWords[afterIndex] : "";
+  const size_t beforeIndex = index == 0 ? sampleCount - 1 : index - 1;
+  const size_t afterIndex = (index + 1 >= sampleCount) ? 0 : index + 1;
+  const String beforeText =
+      phantomWordsEnabled_ ? typographyPreviewSampleAt(beforeIndex) : String("");
+  const String afterText =
+      phantomWordsEnabled_ ? typographyPreviewSampleAt(afterIndex) : String("");
+  const String currentText = typographyPreviewSampleAt(index);
   const String line1 = typographyTuningLabel() + ": " + typographyTuningValueLabel();
   const String title =
       uiText(UiText::Typography) + " " + String(static_cast<unsigned int>(index + 1)) + "/" +
-      String(static_cast<unsigned int>(kTypographyPreviewWordCount));
+      String(static_cast<unsigned int>(sampleCount));
   String line2 = uiText(UiText::TapChangeSample);
   if (typographyTuningSelectedIndex_ == TypographyTuningBack) {
     line2 = uiText(UiText::TapExitSample);
@@ -5487,7 +5598,7 @@ void App::renderTypographyTuning() {
   }
 
   display_.renderTypographyPreview(beforeText,
-                                   kTypographyPreviewWords[index],
+                                   currentText,
                                    afterText,
                                    readerFontSizeIndex_, title, line1, line2);
 }
@@ -6319,8 +6430,17 @@ void App::handleCurrentBookReadFailure(uint32_t nowMs, const char *detail) {
   openBookPicker(articlesOnly);
 }
 
+void App::applyBurnInJitter(uint32_t nowMs) {
+  // AMOLED burn-in protection: shift the whole reader frame by a slow, balanced
+  // +/-1 px pattern. Always on, no pref -- the motion is imperceptible and the
+  // time-average pixel position stays centred. See display::BurnInJitter.
+  const burnin::JitterOffset offset = burnin::jitterOffset(nowMs);
+  display_.setReaderRenderOffset(offset.dx, offset.dy);
+}
+
 void App::renderReaderWord() {
   applyReaderUiOrientation();
+  applyBurnInJitter(millis());
   contextViewVisible_ = false;
   const String beforeText = phantomWordsEnabled_ ? phantomBeforeText() : "";
   const String afterText = phantomWordsEnabled_ ? phantomAfterText() : "";
@@ -6425,6 +6545,7 @@ void App::invalidateContextPreviewWindow() {
 
 void App::renderContextPreview() {
   applyReaderUiOrientation();
+  applyBurnInJitter(millis());
   const size_t wordCount = reader_.wordCount();
   if (wordCount == 0) {
     renderReaderWord();
@@ -6444,6 +6565,7 @@ void App::renderContextPreview() {
 
 void App::renderScrollReader(uint32_t nowMs, const String &overlayText) {
   applyReaderUiOrientation();
+  applyBurnInJitter(nowMs);
   contextViewVisible_ = false;
   const size_t wordCount = reader_.wordCount();
   if (wordCount == 0) {
@@ -6477,6 +6599,7 @@ void App::renderWpmFeedback(uint32_t nowMs) {
   }
 
   applyReaderUiOrientation();
+  applyBurnInJitter(nowMs);
   wpmFeedbackVisible_ = true;
   wpmFeedbackUntilMs_ = nowMs + kWpmFeedbackMs;
   if (scrollModeEnabled()) {
