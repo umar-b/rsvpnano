@@ -3013,6 +3013,111 @@ void DisplayManager::renderLifeScreensaver(const std::vector<uint32_t> &cells, u
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+void DisplayManager::renderScreensaverText(const std::vector<ScreensaverTextSprite> &sprites,
+                                           uint16_t columns, uint16_t rows, uint32_t generation) {
+  if (!initialized_ || columns == 0 || rows == 0) {
+    return;
+  }
+
+  // Cheap change-detect so we skip redundant flushes (same contract as the cell
+  // saver). Fold sprite count + the first/last sprite into the key.
+  String renderKey = "sstext|" + String(generation) + "|" + String(columns) + "|" + String(rows) +
+                     "|d:" + String(darkMode_ ? 1 : 0) + "|n:" + String(nightMode_ ? 1 : 0) +
+                     "|c:" + String(static_cast<unsigned>(sprites.size()));
+  if (!sprites.empty()) {
+    const ScreensaverTextSprite &first = sprites.front();
+    const ScreensaverTextSprite &last = sprites.back();
+    renderKey += "|f:" + first.text + ":" + String(first.cellX) + ":" + String(first.cellY) + ":" +
+                 String(first.bright ? 1 : 0) + "|l:" + last.text + ":" + String(last.cellX) + ":" +
+                 String(last.cellY);
+  }
+  if (renderKey == lastRenderKey_) {
+    return;
+  }
+  lastRenderKey_ = renderKey;
+
+  const int virtualWidth = logicalWidth();
+  const int virtualHeight = logicalHeight();
+  const int cellSize = std::max(1, std::min(virtualWidth / static_cast<int>(columns),
+                                            virtualHeight / static_cast<int>(rows)));
+  // Tiny 5x7 font, scaled so a word is comfortably readable at standby distance.
+  const int textScale = std::max(1, cellSize * 2);
+
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+  for (const ScreensaverTextSprite &sprite : sprites) {
+    const int px = static_cast<int>(sprite.cellX) * cellSize;
+    const int py = static_cast<int>(sprite.cellY) * cellSize;
+    uint16_t color;
+    if (sprite.bright) {
+      color = focusColor();
+    } else {
+      // dim 0 -> full word color; higher dim fades toward the background.
+      const uint8_t alpha = static_cast<uint8_t>(255 - sprite.dim);
+      color = blendOverBackground(wordColor(), alpha);
+    }
+    drawTinyTextAt(sprite.text.c_str(), px, py, color, textScale);
+  }
+
+  flushScaledFrame(1, virtualWidth, virtualHeight);
+}
+
+void DisplayManager::renderBookCoverStandby(const String &title, uint8_t progressPercent,
+                                            const String &wordsReadLine, int16_t offsetX,
+                                            int16_t offsetY, uint32_t variant) {
+  if (!initialized_) {
+    return;
+  }
+  progressPercent = static_cast<uint8_t>(std::min<int>(100, progressPercent));
+
+  const String renderKey = "bookcover|" + title + "|" + String(progressPercent) + "|" +
+                           wordsReadLine + "|" + String(offsetX) + "|" + String(offsetY) + "|" +
+                           String(variant) + "|d:" + String(darkMode_ ? 1 : 0) + "|n:" +
+                           String(nightMode_ ? 1 : 0);
+  if (renderKey == lastRenderKey_) {
+    return;
+  }
+  lastRenderKey_ = renderKey;
+
+  const int virtualWidth = logicalWidth();
+  const int virtualHeight = logicalHeight();
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+
+  // Everything on the card is deliberately faint: this is an idle burn-in-safe
+  // panel, not the reader. Title brightest, supporting lines fainter.
+  const uint16_t titleColor = blendOverBackground(wordColor(), nightMode_ ? 96 : 120);
+  const uint16_t lineColor = blendOverBackground(wordColor(), nightMode_ ? 70 : 90);
+  const uint16_t barColor = blendOverBackground(wordColor(), nightMode_ ? 70 : 90);
+  const uint16_t barTrackColor = blendOverBackground(wordColor(), 36);
+
+  const int centerX = virtualWidth / 2 + offsetX;
+  const int centerY = virtualHeight / 2 + offsetY;
+
+  const int titleScale = 3;
+  const String fittedTitle = fitTinyText(title.length() ? title : String("Reading"),
+                                         virtualWidth - 40, titleScale);
+  const int titleWidth = measureTinyTextWidth(fittedTitle, titleScale);
+  const int titleY = centerY - 7 * titleScale - 14;
+  drawTinyTextAt(fittedTitle, std::max(4, centerX - titleWidth / 2), titleY, titleColor,
+                 titleScale);
+
+  // Progress bar.
+  const int barWidth = std::min(virtualWidth - 60, 220);
+  const int barHeight = 6;
+  const int barX = centerX - barWidth / 2;
+  const int barY = centerY - 2;
+  fillVirtualRect(barX, barY, barWidth, barHeight, barTrackColor);
+  fillVirtualRect(barX, barY, (barWidth * progressPercent) / 100, barHeight, barColor);
+
+  // Words-read line below the bar.
+  const int lineScale = 2;
+  const String fittedLine = fitTinyText(wordsReadLine, virtualWidth - 40, lineScale);
+  const int lineWidth = measureTinyTextWidth(fittedLine, lineScale);
+  drawTinyTextAt(fittedLine, std::max(4, centerX - lineWidth / 2), barY + barHeight + 12, lineColor,
+                 lineScale);
+
+  flushScaledFrame(1, virtualWidth, virtualHeight);
+}
+
 void DisplayManager::renderFocusTimerScreen(const String &mode, const String &genre,
                                             const String &timer, const String &instruction,
                                             const String &footer, int progressPercent,

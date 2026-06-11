@@ -27,6 +27,9 @@ constexpr const char *kPrefFooterMetricMode = "prog_md";
 constexpr const char *kPrefBatteryLabelMode = "bat_md";
 constexpr const char *kPrefScreensaverMode = "scrn_sv";
 constexpr const char *kPrefIdleStandbyMin = "idle_sby";
+// Standby touch behaviour: when ON and the Life saver is active, a standby tap
+// stamps a glider instead of waking (opt-in; default OFF preserves tap-to-wake).
+constexpr const char *kPrefStandbyTouchPlay = "sv_touch";
 constexpr const char *kPrefReaderBatteryVisible = "read_bat";
 constexpr const char *kPrefReaderChapterVisible = "read_ch";
 constexpr const char *kPrefReaderProgressVisible = "read_pct";

@@ -1,8 +1,12 @@
 #include "standby/Screensaver.h"
 
 #include <algorithm>
+#include <string>
+#include <utility>
 
+#include "standby/DvdBounce.h"
 #include "standby/LifeGrid.h"
+#include "standby/WordRain.h"
 
 namespace standby {
 namespace {
@@ -89,7 +93,24 @@ class LifeScreensaver : public Screensaver {
     }
   }
 
-  Frame frame() const override { return Frame{&cells_, nullptr, generation_}; }
+  Frame frame() const override { return Frame{&cells_, nullptr, generation_, nullptr}; }
+
+  bool stampPatternAt(int cellX, int cellY) override {
+    const size_t cellCount = static_cast<size_t>(columns_) * rows_;
+    if (cells_.size() != packedWordCount(cellCount)) {
+      return false;
+    }
+    // Centre a glider on the touched cell, clipping at the edges.
+    const int originX = cellX - 1;
+    const int originY = cellY - 1;
+    for (size_t i = 0; i < count(kGlider); ++i) {
+      setCellAt(cells_, columns_, rows_, originX + kGlider[i].x, originY + kGlider[i].y, true);
+    }
+    // Bump the generation so the renderer's change-detect (which only samples a
+    // couple of words) always redraws after an interactive stamp.
+    ++generation_;
+    return true;
+  }
 
  private:
   uint16_t columns_;
@@ -189,7 +210,7 @@ class MazeScreensaver : public Screensaver {
     }
   }
 
-  Frame frame() const override { return Frame{&cells_, nullptr, generation_}; }
+  Frame frame() const override { return Frame{&cells_, nullptr, generation_, nullptr}; }
 
  private:
   uint16_t columns_;
@@ -259,7 +280,7 @@ class VoronoiScreensaver : public Screensaver {
     render();
   }
 
-  Frame frame() const override { return Frame{&cells_, &dimCells_, generation_}; }
+  Frame frame() const override { return Frame{&cells_, &dimCells_, generation_, nullptr}; }
 
  private:
   void render() {
@@ -312,6 +333,101 @@ class VoronoiScreensaver : public Screensaver {
   std::vector<int16_t> vdy_;
 };
 
+// ---------------------------------------------------------------------------
+// Word-rain: a text-overlay saver. The grid pointers stay null; the frame's
+// text list carries the falling words. Logic lives in the pure WordRain module.
+// ---------------------------------------------------------------------------
+class WordRainScreensaver : public Screensaver {
+ public:
+  WordRainScreensaver(uint16_t columns, uint16_t rows) : rain_(columns, rows) {}
+
+  void seed(uint32_t rngSeed) override {
+    rain_.seed(rngSeed);
+    syncSprites();
+  }
+
+  void seedWords(const std::vector<std::string> &words) override {
+    rain_.setWords(words);
+    // Re-roll the active columns so the new pool shows immediately.
+    rain_.seed(rain_.generation() * 2654435761UL + 1);
+    syncSprites();
+  }
+
+  void step() override {
+    rain_.step();
+    syncSprites();
+  }
+
+  Frame frame() const override {
+    Frame f{nullptr, nullptr, rain_.generation(), &sprites_};
+    return f;
+  }
+
+ private:
+  void syncSprites() {
+    sprites_.clear();
+    sprites_.reserve(rain_.words().size());
+    for (const RainWord &w : rain_.words()) {
+      TextSprite s;
+      s.text = w.text;
+      s.x = w.x;
+      s.y = w.y;
+      s.dim = w.dim;
+      sprites_.push_back(std::move(s));
+    }
+  }
+
+  WordRain rain_;
+  std::vector<TextSprite> sprites_;
+};
+
+// ---------------------------------------------------------------------------
+// DVD-logo bounce: a single text sprite ("RSVP") bouncing diagonally. Corner
+// hits set the bright flag for one frame. Logic lives in the pure DvdBounce
+// module; this adapter sizes the box in grid cells and reserves room for the
+// label's footprint.
+// ---------------------------------------------------------------------------
+class DvdBounceScreensaver : public Screensaver {
+ public:
+  DvdBounceScreensaver(uint16_t columns, uint16_t rows)
+      : bounce_(static_cast<int16_t>(columns), static_cast<int16_t>(rows), kLabelWidthCells,
+                kLabelHeightCells) {}
+
+  void seed(uint32_t rngSeed) override {
+    bounce_.seed(rngSeed);
+    syncSprite();
+  }
+
+  void step() override {
+    bounce_.step();
+    syncSprite();
+  }
+
+  Frame frame() const override {
+    Frame f{nullptr, nullptr, bounce_.generation(), &sprites_};
+    return f;
+  }
+
+ private:
+  // "RSVP" at the renderer's tiny-text scale spans roughly this many grid cells.
+  static constexpr int16_t kLabelWidthCells = 28;
+  static constexpr int16_t kLabelHeightCells = 9;
+
+  void syncSprite() {
+    sprites_.clear();
+    TextSprite s;
+    s.text = "RSVP";
+    s.x = bounce_.x();
+    s.y = bounce_.y();
+    s.dim = 0;
+    s.bright = bounce_.cornerFlash();
+    sprites_.push_back(std::move(s));
+  }
+
+  DvdBounce bounce_;
+  std::vector<TextSprite> sprites_;
+};
+
 }  // namespace
 
 std::unique_ptr<Screensaver> makeScreensaver(Kind kind, uint16_t columns, uint16_t rows) {
@@ -320,6 +436,10 @@ std::unique_ptr<Screensaver> makeScreensaver(Kind kind, uint16_t columns, uint16
       return std::unique_ptr<Screensaver>(new MazeScreensaver(columns, rows));
     case Kind::Voronoi:
       return std::unique_ptr<Screensaver>(new VoronoiScreensaver(columns, rows));
+    case Kind::WordRain:
+      return std::unique_ptr<Screensaver>(new WordRainScreensaver(columns, rows));
+    case Kind::DvdBounce:
+      return std::unique_ptr<Screensaver>(new DvdBounceScreensaver(columns, rows));
     case Kind::Life:
     default:
       return std::unique_ptr<Screensaver>(new LifeScreensaver(columns, rows));

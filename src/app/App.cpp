@@ -16,6 +16,7 @@
 #include "board/BoardConfig.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
+#include "standby/BookCoverDrift.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
@@ -150,13 +151,14 @@ constexpr size_t kSettingsDisplayFooterIndex = 5;
 constexpr size_t kSettingsDisplayBatteryIndex = 6;
 constexpr size_t kSettingsDisplayScreensaverIndex = 7;
 constexpr size_t kSettingsDisplayIdleStandbyIndex = 8;
-constexpr size_t kSettingsDisplayMuteIndex = 9;
-constexpr size_t kSettingsDisplayVolumeIndex = 10;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 11;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
-constexpr size_t kSettingsDisplayLanguageIndex = 14;
-constexpr size_t kSettingsDisplayMotionPauseIndex = 15;
+constexpr size_t kSettingsDisplayStandbyTouchIndex = 9;
+constexpr size_t kSettingsDisplayMuteIndex = 10;
+constexpr size_t kSettingsDisplayVolumeIndex = 11;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 12;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 13;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 14;
+constexpr size_t kSettingsDisplayLanguageIndex = 15;
+constexpr size_t kSettingsDisplayMotionPauseIndex = 16;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -484,6 +486,7 @@ void App::begin() {
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
   standbyDecider_.setIdleTimeoutMs(static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL);
+  standbyTouchPlay_ = preferences_.getBool(kPrefStandbyTouchPlay, standbyTouchPlay_);
   audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
   audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
   if (audioVolumePercent_ > 100) {
@@ -532,6 +535,15 @@ void App::begin() {
       break;
     case static_cast<uint8_t>(ScreensaverMode::Voronoi):
       screensaverMode_ = ScreensaverMode::Voronoi;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::WordRain):
+      screensaverMode_ = ScreensaverMode::WordRain;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::DvdBounce):
+      screensaverMode_ = ScreensaverMode::DvdBounce;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::BookCover):
+      screensaverMode_ = ScreensaverMode::BookCover;
       break;
     case static_cast<uint8_t>(ScreensaverMode::ScreenOff):
       screensaverMode_ = ScreensaverMode::ScreenOff;
@@ -1247,6 +1259,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
   standbyDecider_.setIdleTimeoutMs(static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL);
+  standbyTouchPlay_ = preferences_.getBool(kPrefStandbyTouchPlay, standbyTouchPlay_);
   audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
   audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
   if (audioVolumePercent_ > 100) {
@@ -1298,6 +1311,15 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       break;
     case static_cast<uint8_t>(ScreensaverMode::Voronoi):
       screensaverMode_ = ScreensaverMode::Voronoi;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::WordRain):
+      screensaverMode_ = ScreensaverMode::WordRain;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::DvdBounce):
+      screensaverMode_ = ScreensaverMode::DvdBounce;
+      break;
+    case static_cast<uint8_t>(ScreensaverMode::BookCover):
+      screensaverMode_ = ScreensaverMode::BookCover;
       break;
     case static_cast<uint8_t>(ScreensaverMode::ScreenOff):
       screensaverMode_ = ScreensaverMode::ScreenOff;
@@ -2615,6 +2637,15 @@ void App::selectSettingsItem(uint32_t nowMs) {
             screensaverMode_ = ScreensaverMode::Voronoi;
             break;
           case ScreensaverMode::Voronoi:
+            screensaverMode_ = ScreensaverMode::WordRain;
+            break;
+          case ScreensaverMode::WordRain:
+            screensaverMode_ = ScreensaverMode::DvdBounce;
+            break;
+          case ScreensaverMode::DvdBounce:
+            screensaverMode_ = ScreensaverMode::BookCover;
+            break;
+          case ScreensaverMode::BookCover:
             screensaverMode_ = ScreensaverMode::ScreenOff;
             break;
           case ScreensaverMode::ScreenOff:
@@ -2628,6 +2659,12 @@ void App::selectSettingsItem(uint32_t nowMs) {
         return;
       case kSettingsDisplayIdleStandbyIndex:
         cycleIdleStandbyTimeout();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayStandbyTouchIndex:
+        standbyTouchPlay_ = !standbyTouchPlay_;
+        preferences_.putBool(kPrefStandbyTouchPlay, standbyTouchPlay_);
         rebuildSettingsMenuItems();
         renderSettings();
         return;
@@ -3283,6 +3320,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
     settingsMenuItems_.push_back("Idle standby: " + idleStandbyLabel());
+    settingsMenuItems_.push_back("Standby touch: " + standbyTouchLabel());
     settingsMenuItems_.push_back("Mute audio: " + audioMuteLabel());
     settingsMenuItems_.push_back("Volume: " + audioVolumeLabel());
     settingsMenuItems_.push_back("Reading battery: " +
@@ -4474,6 +4512,7 @@ void App::enterStandby(uint32_t nowMs) {
   standbyButtonsReleased_ = false;
   standbyWakeTouchActive_ = false;
   lastStandbyFrameMs_ = 0;
+  standbyEnteredMs_ = nowMs;
   // Anchor the wake grace; a no-op when this entry was the decider's own
   // verdict (it already flipped its mode).
   standbyDecider_.noteStandbyEntered(nowMs);
@@ -4548,13 +4587,28 @@ void App::handleStandbyTouchWake(uint32_t nowMs) {
     const int absDeltaX = abs(static_cast<int>(ev.x) - static_cast<int>(standbyWakeStartX_));
     const int absDeltaY = abs(static_cast<int>(ev.y) - static_cast<int>(standbyWakeStartY_));
     standbyWakeTouchActive_ = false;
+    if (!touchgesture::isTap(absDeltaX, absDeltaY)) {
+      return;
+    }
+    // Interactive Life: when standby touch is set to Play and the Life saver is
+    // active, a tap stamps a glider at the touched cell instead of waking.
+    // Waking then happens via buttons or lift-to-wake. Other savers (and the
+    // Play mode when the saver isn't Life) keep the tap-to-wake behaviour.
+    if (standbyTouchPlay_ && screensaverMode_ == ScreensaverMode::Life && screensaver_) {
+      const int cellX = static_cast<int>(ev.x) / kStandbyLifeCellPixels;
+      const int cellY = static_cast<int>(ev.y) / kStandbyLifeCellPixels;
+      if (screensaver_->stampPatternAt(cellX, cellY)) {
+        // Force an immediate redraw so the glider appears under the finger.
+        updateStandbyScreensaver(nowMs, true);
+        Serial.println("[app] standby tap stamped glider");
+        return;
+      }
+    }
     // Decision 1: any tap (within the slop box) after the grace window wakes.
     // (exitStandby reports the wake to the decider, which counts it as
     // activity for the idle timer.)
-    if (touchgesture::isTap(absDeltaX, absDeltaY)) {
-      Serial.println("[app] tap wake from standby");
-      exitStandby(nowMs);
-    }
+    Serial.println("[app] tap wake from standby");
+    exitStandby(nowMs);
   }
 }
 
@@ -4712,6 +4766,13 @@ void App::seedStandbyScreensaver(uint32_t nowMs) {
     return;
   }
 
+  // Book-cover is App-rendered (no cell automaton), mirroring the ScreenOff
+  // special case: it keeps the panel on and draws a dim, drifting status card.
+  if (screensaverMode_ == ScreensaverMode::BookCover) {
+    screensaver_.reset();
+    return;
+  }
+
   standby::Kind kind = standby::Kind::Life;
   switch (screensaverMode_) {
     case ScreensaverMode::Maze:
@@ -4720,6 +4781,12 @@ void App::seedStandbyScreensaver(uint32_t nowMs) {
     case ScreensaverMode::Voronoi:
       kind = standby::Kind::Voronoi;
       break;
+    case ScreensaverMode::WordRain:
+      kind = standby::Kind::WordRain;
+      break;
+    case ScreensaverMode::DvdBounce:
+      kind = standby::Kind::DvdBounce;
+      break;
     case ScreensaverMode::Life:
     default:
       kind = standby::Kind::Life;
@@ -4727,6 +4794,9 @@ void App::seedStandbyScreensaver(uint32_t nowMs) {
   }
   screensaver_ = standby::makeScreensaver(kind, kStandbyLifeColumns, kStandbyLifeRows);
   screensaver_->seed(standbyRngSeed(nowMs));
+  if (screensaverMode_ == ScreensaverMode::WordRain) {
+    screensaver_->seedWords(sampleStandbyWords());
+  }
 }
 
 void App::stepStandbyScreensaver(uint32_t nowMs) {
@@ -4734,6 +4804,63 @@ void App::stepStandbyScreensaver(uint32_t nowMs) {
   if (screensaver_) {
     screensaver_->step();
   }
+}
+
+std::vector<std::string> App::sampleStandbyWords() const {
+  // Sample ~40 words around the saved position of the current book; the
+  // word-rain saver falls back to its built-in list when this is empty.
+  std::vector<std::string> words;
+  const size_t total = reader_.wordCount();
+  if (total == 0) {
+    return words;
+  }
+  constexpr size_t kSampleCount = 40;
+  const size_t current = reader_.currentIndex();
+  size_t start = current > kSampleCount / 2 ? current - kSampleCount / 2 : 0;
+  if (start + kSampleCount > total) {
+    start = total > kSampleCount ? total - kSampleCount : 0;
+  }
+  const size_t end = std::min(total, start + kSampleCount);
+  words.reserve(end - start);
+  for (size_t i = start; i < end; ++i) {
+    String w = reader_.wordAt(i);
+    w.trim();
+    if (w.length() == 0) {
+      continue;
+    }
+    // Keep words short enough to fall cleanly; long tokens get truncated.
+    if (w.length() > 12) {
+      w = w.substring(0, 12);
+    }
+    words.push_back(std::string(w.c_str()));
+  }
+  return words;
+}
+
+void App::renderBookCoverStandby(uint32_t nowMs) {
+  const uint32_t elapsed = nowMs - standbyEnteredMs_;
+  // Drift within a modest pixel budget; the helper cycles a ring once per
+  // interval so wear spreads across the rectangle.
+  constexpr int16_t kDriftX = 26;
+  constexpr int16_t kDriftY = 20;
+  const standby::DriftOffset offset =
+      standby::bookCoverDrift(elapsed, kDriftX, kDriftY, standbyEnteredMs_ / 1000U);
+
+  const String title = currentBookTitle_.length() ? currentBookTitle_ : String("Reading");
+
+  uint8_t progressPercent = 0;
+  const size_t total = reader_.wordCount();
+  if (total > 0) {
+    progressPercent =
+        static_cast<uint8_t>(std::min<size_t>(100, (reader_.currentIndex() * 100UL) / total));
+  }
+
+  const uint64_t dayWords = readingStats_.snapshot().dayWords;
+  const String wordsLine = String("Today ") + String(static_cast<unsigned long>(dayWords)) +
+                           String(" words");
+
+  display_.renderBookCoverStandby(title, progressPercent, wordsLine, offset.dx, offset.dy,
+                                  standby::bookCoverDriftStep(elapsed));
 }
 
 void App::seedStandbyScreenOff(uint32_t nowMs) {
@@ -4756,6 +4883,18 @@ void App::updateStandbyScreensaver(uint32_t nowMs, bool force) {
     return;
   }
 
+  // Book-cover: a static-content card that only moves on the burn-in drift
+  // schedule. No per-frame automaton step; the renderer's change-detect skips
+  // redundant flushes between drifts.
+  if (screensaverMode_ == ScreensaverMode::BookCover) {
+    if (!force && nowMs - lastStandbyFrameMs_ < kStandbyFrameMs) {
+      return;
+    }
+    lastStandbyFrameMs_ = nowMs;
+    renderBookCoverStandby(nowMs);
+    return;
+  }
+
   if (!force && nowMs - lastStandbyFrameMs_ < kStandbyFrameMs) {
     return;
   }
@@ -4769,8 +4908,26 @@ void App::updateStandbyScreensaver(uint32_t nowMs, bool force) {
   lastStandbyFrameMs_ = nowMs;
   if (screensaver_) {
     const standby::Frame frame = screensaver_->frame();
-    display_.renderLifeScreensaver(*frame.cells, kStandbyLifeColumns, kStandbyLifeRows,
-                                   frame.generation, frame.dimCells);
+    if (frame.text != nullptr) {
+      // Text-overlay saver (word-rain, DVD-bounce): translate sprites into the
+      // display's render structs.
+      std::vector<DisplayManager::ScreensaverTextSprite> sprites;
+      sprites.reserve(frame.text->size());
+      for (const standby::TextSprite &s : *frame.text) {
+        DisplayManager::ScreensaverTextSprite out;
+        out.text = String(s.text.c_str());
+        out.cellX = s.x;
+        out.cellY = s.y;
+        out.dim = s.dim;
+        out.bright = s.bright;
+        sprites.push_back(std::move(out));
+      }
+      display_.renderScreensaverText(sprites, kStandbyLifeColumns, kStandbyLifeRows,
+                                     frame.generation);
+    } else if (frame.cells != nullptr) {
+      display_.renderLifeScreensaver(*frame.cells, kStandbyLifeColumns, kStandbyLifeRows,
+                                     frame.generation, frame.dimCells);
+    }
   }
 }
 
@@ -5484,6 +5641,12 @@ String App::screensaverModeLabel() const {
       return "Maze";
     case ScreensaverMode::Voronoi:
       return "Voronoi";
+    case ScreensaverMode::WordRain:
+      return "Word rain";
+    case ScreensaverMode::DvdBounce:
+      return "Bounce";
+    case ScreensaverMode::BookCover:
+      return "Book cover";
     case ScreensaverMode::ScreenOff:
       return "Screen off";
     case ScreensaverMode::Life:
@@ -5491,6 +5654,8 @@ String App::screensaverModeLabel() const {
       return "Life";
   }
 }
+
+String App::standbyTouchLabel() const { return standbyTouchPlay_ ? "Play" : "Wake"; }
 
 String App::batteryTimeRemainingLabel() const {
   if (batteryMonitor_.runtimeEstimateReady()) {
