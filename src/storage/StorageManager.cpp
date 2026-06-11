@@ -818,6 +818,38 @@ String StorageManager::bookPath(size_t index) const {
   return bookPaths_[index];
 }
 
+String StorageManager::deleteBook(size_t index) {
+  const String path = bookPath(index);
+  if (path.isEmpty()) {
+    Serial.printf("[storage] deleteBook: index %u out of range\n",
+                  static_cast<unsigned int>(index));
+    return "";
+  }
+  if (!mounted_) {
+    Serial.println("[storage] deleteBook: SD not mounted");
+    return "";
+  }
+
+  // Remove the index sidecars first (they are derived data); a failure to
+  // remove a sidecar is non-fatal -- they'll be rebuilt or ignored.
+  const String indexPath = indexedIndexPathFor(path);
+  const String dataPath = indexedDataPathFor(path);
+  SD_MMC.remove(indexedTempPathFor(indexPath));
+  SD_MMC.remove(indexedTempPathFor(dataPath));
+  SD_MMC.remove(indexPath);
+  SD_MMC.remove(dataPath);
+
+  const bool removed = SD_MMC.remove(path);
+  if (!removed) {
+    Serial.printf("[storage] deleteBook: failed to remove %s\n", path.c_str());
+    return "";
+  }
+
+  Serial.printf("[storage] deleted book %s (+ index sidecars)\n", path.c_str());
+  refreshBookPaths(true);
+  return path;
+}
+
 bool StorageManager::bookIsArticle(size_t index) const {
   const String path = bookPath(index);
   return path.startsWith(String(kArticleFilesPath) + "/");

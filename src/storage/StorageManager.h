@@ -52,6 +52,12 @@ class StorageManager {
                      size_t *loadedIndex = nullptr);
   DiagnosticResult diagnoseSdCard();
   bool repairSdCardFolders();
+  // Delete the book at `index` from the SD card: removes the underlying file
+  // plus its .ridx/.rdat index sidecars, then refreshes the in-memory library
+  // so subsequent bookCount()/bookPath() calls reflect the removal. Returns the
+  // deleted file's path (empty on failure / out-of-range). NVS progress is the
+  // caller's concern (App clears it via BookProgress).
+  String deleteBook(size_t index);
 
  private:
   bool ensureIndexedBook(const String &path, BookMetadata &metadata, bool rsvpFormat,
