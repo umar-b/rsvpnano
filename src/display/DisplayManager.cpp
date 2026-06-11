@@ -2267,11 +2267,12 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
                                                   uint16_t wpm, const String &chapterLabel,
                                                   uint8_t progressPercent, bool showFooter,
                                                   const String &footerStatusLabel,
-                                                  ReaderChrome chrome) {
+                                                  ReaderChrome chrome,
+                                                  const String &consequenceLabel) {
   const String wpmText = String(wpm) + " WPM";
   const String renderKey =
       "rsvp_phantom_wpm|" + beforeText + "|" + word + "|" + afterText + "|s:" +
-      String(fontSizeLevel) + "|" + wpmText + "|" + chapterLabel + "|" +
+      String(fontSizeLevel) + "|" + wpmText + "|c:" + consequenceLabel + "|" + chapterLabel + "|" +
       String(progressPercent) + "|" + String(showFooter ? 1 : 0) + "|f:" + footerStatusLabel +
       "|b:" + batteryLabel_ + "|rc:" + readerChromeKey(chrome) + "|d:" +
       String(darkMode_ ? 1 : 0) + "|n:" + String(nightMode_ ? 1 : 0);
@@ -2311,6 +2312,10 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
       drawSerif70TextAt(afterText, afterX, textY, phantomColor);
     }
     drawTinyTextCentered(wpmText, wpmY, focusColor(), kTinyScale);
+    if (!consequenceLabel.isEmpty()) {
+      drawTinyTextCentered(consequenceLabel, wpmY + kTinyGlyphHeight * kTinyScale + 4, wordColor(),
+                           kTinyScale);
+    }
     if (showFooter) {
       drawFooter(chapterLabel, footerStatusLabel.isEmpty() ? String(progressPercent) + "%"
                                                            : footerStatusLabel,
@@ -2359,6 +2364,10 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
     drawSerifTextScaledAt(afterText, afterX, textY, phantomColor, style.scalePercent);
   }
   drawTinyTextCentered(wpmText, wpmY, focusColor(), kTinyScale);
+  if (!consequenceLabel.isEmpty()) {
+    drawTinyTextCentered(consequenceLabel, wpmY + kTinyGlyphHeight * kTinyScale + 4, wordColor(),
+                         kTinyScale);
+  }
   if (showFooter) {
     drawFooter(chapterLabel, footerStatusLabel.isEmpty() ? String(progressPercent) + "%"
                                                          : footerStatusLabel,

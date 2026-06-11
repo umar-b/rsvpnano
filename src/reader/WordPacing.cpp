@@ -391,29 +391,40 @@ uint16_t complexityBonusPercentForWord(const String &word) {
   return std::min<uint16_t>(kComplexWordMaxPercent, bonusPercent);
 }
 
-uint16_t punctuationPausePercentForWord(const String &word, bool nextWordStartsLowercase) {
+// A punctuation pause resolves to a percentage bonus and which base delay it
+// draws from: sentence-end punctuation ('.' '!' '?', ellipsis) uses the
+// punctuation delay; clause punctuation (',' ';' ':' '-') uses the clause
+// delay. A zero percent means no pause (and the kind is irrelevant).
+enum class PunctuationKind { None, Clause, SentenceEnd };
+
+struct PunctuationPause {
+  uint16_t percent;
+  PunctuationKind kind;
+};
+
+PunctuationPause punctuationPauseForWord(const String &word, bool nextWordStartsLowercase) {
   if (endsWithEllipsis(word)) {
-    return kEllipsisPausePercent;
+    return {kEllipsisPausePercent, PunctuationKind::SentenceEnd};
   }
 
   switch (trailingRhythmChar(word)) {
     case ',':
-      return kCommaPausePercent;
+      return {kCommaPausePercent, PunctuationKind::Clause};
     case '-':
-      return kDashPausePercent;
+      return {kDashPausePercent, PunctuationKind::Clause};
     case ';':
     case ':':
-      return kClausePausePercent;
+      return {kClausePausePercent, PunctuationKind::Clause};
     case '.':
       if (!looksLikeAbbreviation(word, nextWordStartsLowercase)) {
-        return kSentencePausePercent;
+        return {kSentencePausePercent, PunctuationKind::SentenceEnd};
       }
-      return 0;
+      return {0, PunctuationKind::None};
     case '!':
     case '?':
-      return kStrongSentencePausePercent;
+      return {kStrongSentencePausePercent, PunctuationKind::SentenceEnd};
     default:
-      return 0;
+      return {0, PunctuationKind::None};
   }
 }
 
@@ -424,6 +435,7 @@ PacingConfig clampConfig(const PacingConfig &config) {
   out.longWordDelayMs = clampPacingDelayMs(config.longWordDelayMs);
   out.complexWordDelayMs = clampPacingDelayMs(config.complexWordDelayMs);
   out.punctuationDelayMs = clampPacingDelayMs(config.punctuationDelayMs);
+  out.clausePauseDelayMs = clampPacingDelayMs(config.clausePauseDelayMs);
   out.longWordScalePercent = clampScalePercent(config.longWordScalePercent);
   out.complexWordScalePercent = clampScalePercent(config.complexWordScalePercent);
   out.punctuationScalePercent = clampScalePercent(config.punctuationScalePercent);
@@ -467,10 +479,14 @@ uint32_t bonusMsForWord(const String &word, bool nextWordStartsLowercase,
   totalBonusMs += scaledDelayMs(
       scaledPercent(complexityBonusPercentForWord(word), config.complexWordScalePercent),
       config.complexWordDelayMs);
-  totalBonusMs +=
-      scaledDelayMs(scaledPercent(punctuationPausePercentForWord(word, nextWordStartsLowercase),
-                                  config.punctuationScalePercent),
-                    config.punctuationDelayMs);
+  const PunctuationPause pause = punctuationPauseForWord(word, nextWordStartsLowercase);
+  if (pause.percent > 0) {
+    const uint16_t baseDelayMs = pause.kind == PunctuationKind::Clause
+                                     ? config.clausePauseDelayMs
+                                     : config.punctuationDelayMs;
+    totalBonusMs +=
+        scaledDelayMs(scaledPercent(pause.percent, config.punctuationScalePercent), baseDelayMs);
+  }
   return totalBonusMs;
 }
 

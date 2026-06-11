@@ -30,6 +30,17 @@ String recentKey(const String &path);
 String finishedKey(const String &path);
 // "k<hash>" -- the packed bookmark blob for a book (a sequence of word indices).
 String bookmarkKey(const String &path);
+// "w<hash>" -- the per-book WPM override (the reading speed the user last set
+// while this book was open). Distinct from the global kPrefWpm fallback.
+String wpmKey(const String &path);
+
+// Sentinel for "this book has no WPM override saved". 0 is never a valid WPM
+// (the reader floor is 10), so it doubles as the absent marker.
+constexpr uint16_t kNoSavedWpm = 0;
+
+// Restore priority: a book's saved WPM override when present, else the global
+// fallback. Pure so the priority rule is testable without NVS.
+uint16_t resolveBookWpm(uint16_t savedBookWpm, uint16_t globalFallbackWpm);
 
 // Maximum bookmarks kept per book. New marks past the cap drop the oldest.
 constexpr size_t kMaxBookmarks = 16;
@@ -61,6 +72,11 @@ class BookProgress {
   // legacy single-slot index for backward compatibility.
   void savePosition(const String &path, uint32_t wordIndex, uint32_t wordCount);
   void saveWordCount(const String &path, uint32_t wordCount);
+
+  // Per-book WPM override: the speed the user chose while this book was open.
+  // saveWpm stores it; readWpm returns it or kNoSavedWpm when none is stored.
+  void saveWpm(const String &path, uint16_t wpm);
+  uint16_t readWpm(const String &path);
 
   // Saved word index for the book, or kNoSavedWordIndex if none. When
   // allowLegacyFallback is set and no per-book key exists, migrates the legacy

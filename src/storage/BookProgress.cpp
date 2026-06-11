@@ -18,6 +18,21 @@ void BookProgress::saveWordCount(const String &path, uint32_t wordCount) {
   prefs_.putUInt(bookprogress::wordCountKey(path).c_str(), wordCount);
 }
 
+void BookProgress::saveWpm(const String &path, uint16_t wpm) {
+  if (path.isEmpty() || wpm == bookprogress::kNoSavedWpm) {
+    return;
+  }
+  prefs_.putUShort(bookprogress::wpmKey(path).c_str(), wpm);
+}
+
+uint16_t BookProgress::readWpm(const String &path) {
+  const String key = bookprogress::wpmKey(path);
+  if (path.isEmpty() || !prefs_.isKey(key.c_str())) {
+    return bookprogress::kNoSavedWpm;
+  }
+  return prefs_.getUShort(key.c_str(), bookprogress::kNoSavedWpm);
+}
+
 uint32_t BookProgress::readPosition(const String &path, bool allowLegacyFallback) {
   const String key = bookprogress::positionKey(path);
   if (prefs_.isKey(key.c_str())) {

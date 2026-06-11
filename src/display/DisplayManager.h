@@ -95,7 +95,8 @@ class DisplayManager {
                                     const String &chapterLabel = "",
                                     uint8_t progressPercent = 0, bool showFooter = true,
                                     const String &footerStatusLabel = "",
-                                    ReaderChrome chrome = ReaderChrome());
+                                    ReaderChrome chrome = ReaderChrome(),
+                                    const String &consequenceLabel = "");
   void renderTypographyPreview(const String &beforeText, const String &word, const String &afterText,
                                uint8_t fontSizeLevel, const String &title,
                                const String &line1 = "", const String &line2 = "");

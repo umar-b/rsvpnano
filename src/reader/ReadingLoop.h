@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "reader/BookWordSource.h"
+#include "reader/RampIn.h"
 #include "reader/WordPacing.h"
 
 class ReadingLoop {
@@ -27,6 +28,13 @@ class ReadingLoop {
   void setPacingConfig(const PacingConfig &config);
   const PacingConfig &pacingConfig() const;
 
+  // Ramp-in: when enabled, the first words after every start()/resume flash a
+  // little slower and ease back to the set WPM. Pure timing geometry lives in
+  // the rampin module; the reader only tracks how many words have advanced
+  // since the last resume and folds the scale into the word interval.
+  void setRampInEnabled(bool enabled);
+  bool rampInEnabled() const;
+
   const String &currentWord() const;
   String wordAt(size_t index) const;
   size_t currentIndex() const;
@@ -47,9 +55,16 @@ class ReadingLoop {
   bool wordEndsSentenceAt(size_t wordIndex) const;
   size_t sentenceStartAtOrBefore(size_t wordIndex) const;
 
+  uint32_t rampScaledIntervalMs() const;
+
   size_t currentIndex_ = 0;
   uint32_t lastAdvanceMs_ = 0;
   uint16_t wpm_ = 300;
+  // Starts "ramp finished" so a reader that has not begun playing (e.g. while
+  // paused, scrubbing, or under test) runs at the full set WPM. start() resets
+  // this to 0 to begin a fresh ramp on every resume into Playing.
+  uint32_t wordsSinceResume_ = rampin::kRampWords;
+  bool rampInEnabled_ = true;
   PacingConfig pacingConfig_;
   String currentWord_;
   std::vector<String> loadedWords_;

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "reader/WordSplit.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 
@@ -97,6 +98,9 @@ enum SettingsItem : size_t {
   SettingsLongWords,
   SettingsComplexWords,
   SettingsPunctuation,
+  SettingsClausePause,
+  SettingsRampIn,
+  SettingsPauseContext,
   SettingsReset,
   SettingsItemCount,
 };
@@ -157,13 +161,16 @@ constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
 constexpr size_t kSettingsDisplayLanguageIndex = 14;
 constexpr size_t kSettingsDisplayMotionPauseIndex = 15;
+constexpr size_t kSettingsDisplayPauseContextIndex = 16;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
-constexpr size_t kSettingsPacingWpmIndex = 3;
-constexpr size_t kSettingsPacingLongWordsIndex = 4;
-constexpr size_t kSettingsPacingComplexityIndex = 5;
-constexpr size_t kSettingsPacingPunctuationIndex = 6;
-constexpr size_t kSettingsPacingResetIndex = 7;
+constexpr size_t kSettingsPacingRampInIndex = 3;
+constexpr size_t kSettingsPacingWpmIndex = 4;
+constexpr size_t kSettingsPacingLongWordsIndex = 5;
+constexpr size_t kSettingsPacingComplexityIndex = 6;
+constexpr size_t kSettingsPacingPunctuationIndex = 7;
+constexpr size_t kSettingsPacingClauseIndex = 8;
+constexpr size_t kSettingsPacingResetIndex = 9;
 constexpr size_t kWifiSettingsNetworkIndex = 1;
 constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
@@ -456,6 +463,18 @@ uint16_t loadPacingDelayMs(Preferences &preferences, const char *key, const char
   return kDefaultPacingDelayMs;
 }
 
+// The clause pause delay is a newer split-out of the punctuation delay. When no
+// stored value exists yet, it defaults to half the punctuation default so a
+// comma holds the screen less than a full stop out of the box.
+uint16_t loadClausePauseDelayMs(Preferences &preferences, uint16_t punctuationDefaultMs) {
+  if (preferences.isKey(kPrefPacingClauseMs)) {
+    return static_cast<uint16_t>(clampIntSetting(
+        preferences.getUShort(kPrefPacingClauseMs, punctuationDefaultMs / 2), kPacingDelayMinMs,
+        kPacingDelayMaxMs));
+  }
+  return static_cast<uint16_t>(punctuationDefaultMs / 2);
+}
+
 }  // namespace
 
 App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
@@ -556,6 +575,9 @@ void App::begin() {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
+  pacingClausePauseDelayMs_ = loadClausePauseDelayMs(preferences_, pacingPunctuationDelayMs_);
+  rampInEnabled_ = preferences_.getBool(kPrefRampIn, rampInEnabled_);
+  pauseContextEnabled_ = preferences_.getBool(kPrefPauseContext, pauseContextEnabled_);
   accurateTimeEstimateEnabled_ = true;
   typographyConfig_ = defaultTypographyConfig();
   typographyConfig_.typeface = readerTypefaceFromSetting(
@@ -784,12 +806,14 @@ void App::setState(AppState nextState, uint32_t nowMs) {
     contextViewVisible_ = false;
     invalidateContextPreviewWindow();
     wpmFeedbackVisible_ = false;
+    pendingWpmConsequenceLabel_ = "";
   }
   if (nextState != AppState::Playing) {
     touchPlayHeld_ = false;
     playLocked_ = false;
     pauseAtSentenceEndRequested_ = false;
     chapterTransitionVisible_ = false;
+    resetWordSplitFrame();
   }
   if (nextState != AppState::Paused && nextState != AppState::Playing) {
     resetReaderTapTracking();
@@ -968,6 +992,15 @@ void App::updateReader(uint32_t nowMs) {
   }
 
   if (changed) {
+    // A fresh word may itself be long enough to split; re-evaluate the
+    // sub-frame state for the new word as part of rendering it.
+    renderReaderWord();
+    return;
+  }
+
+  // No advance, but a long word part-way through its slot may need to swap from
+  // its first sub-frame ("hyphen-") to the remainder ("ation").
+  if (updateWordSplitFrame(nowMs)) {
     renderReaderWord();
   }
 }
@@ -1324,6 +1357,9 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
+  pacingClausePauseDelayMs_ = loadClausePauseDelayMs(preferences_, pacingPunctuationDelayMs_);
+  rampInEnabled_ = preferences_.getBool(kPrefRampIn, rampInEnabled_);
+  pauseContextEnabled_ = preferences_.getBool(kPrefPauseContext, pauseContextEnabled_);
   accurateTimeEstimateEnabled_ = true;
 
   typographyConfig_ = defaultTypographyConfig();
@@ -1346,7 +1382,15 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
 
-  reader_.setWpm(preferences_.getUShort(kPrefWpm, reader_.wpm()));
+  {
+    // Respect a loaded book's per-book WPM override over the global pref when
+    // reloading after companion sync; new/unset books fall back to the global.
+    const uint16_t globalWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
+    const uint16_t savedBookWpm = (usingStorageBook_ && !currentBookPath_.isEmpty())
+                                      ? bookProgress_.readWpm(currentBookPath_)
+                                      : bookprogress::kNoSavedWpm;
+    reader_.setWpm(bookprogress::resolveBookWpm(savedBookWpm, globalWpm));
+  }
   applyReaderUiOrientation();
   applyDisplayPreferences(nowMs, false);
   applyTypographySettings(nowMs, false);
@@ -1579,6 +1623,7 @@ void App::updateWpmFeedback(uint32_t nowMs) {
   }
 
   wpmFeedbackVisible_ = false;
+  pendingWpmConsequenceLabel_ = "";
   renderActiveReader(nowMs);
 }
 
@@ -1969,8 +2014,10 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     }
 
     const int wpmDelta = touchgesture::wpmDeltaForDrag(deltaY);
+    const uint16_t previousWpm = reader_.wpm();
     reader_.adjustWpm(wpmDelta);
-    preferences_.putUShort(kPrefWpm, reader_.wpm());
+    persistCurrentWpm();
+    pendingWpmConsequenceLabel_ = wpmChangeConsequenceLabel(previousWpm);
     renderWpmFeedback(nowMs);
     Serial.printf("[app] WPM=%u interval=%lu ms\n", reader_.wpm(),
                   static_cast<unsigned long>(reader_.wordIntervalMs()));
@@ -2670,6 +2717,13 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayPauseContextIndex:
+        pauseContextEnabled_ = !pauseContextEnabled_;
+        preferences_.putBool(kPrefPauseContext, pauseContextEnabled_);
+        Serial.printf("[settings] sentence while paused=%d\n", pauseContextEnabled_ ? 1 : 0);
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -2699,9 +2753,20 @@ void App::selectSettingsItem(uint32_t nowMs) {
       rebuildSettingsMenuItems();
       renderSettings();
       return;
+    case kSettingsPacingRampInIndex:
+      rampInEnabled_ = !rampInEnabled_;
+      preferences_.putBool(kPrefRampIn, rampInEnabled_);
+      pacingConfigChanged = true;
+      break;
+    case kSettingsPacingClauseIndex:
+      pacingClausePauseDelayMs_ = static_cast<uint16_t>(nextCyclicSetting(
+          pacingClausePauseDelayMs_, kPacingDelayMinMs, kPacingDelayMaxMs, kPacingDelayStepMs));
+      preferences_.putUShort(kPrefPacingClauseMs, pacingClausePauseDelayMs_);
+      pacingConfigChanged = true;
+      break;
     case kSettingsPacingWpmIndex:
       reader_.setWpm(nextReaderWpmSetting(reader_.wpm()));
-      preferences_.putUShort(kPrefWpm, reader_.wpm());
+      persistCurrentWpm();
       Serial.printf("[settings] WPM=%u interval=%lu ms\n", reader_.wpm(),
                     static_cast<unsigned long>(reader_.wordIntervalMs()));
       break;
@@ -2727,9 +2792,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
       pacingLongWordDelayMs_ = kDefaultPacingDelayMs;
       pacingComplexWordDelayMs_ = kDefaultPacingDelayMs;
       pacingPunctuationDelayMs_ = kDefaultPacingDelayMs;
+      pacingClausePauseDelayMs_ = static_cast<uint16_t>(kDefaultPacingDelayMs / 2);
       preferences_.putUShort(kPrefPacingLongMs, pacingLongWordDelayMs_);
       preferences_.putUShort(kPrefPacingComplexMs, pacingComplexWordDelayMs_);
       preferences_.putUShort(kPrefPacingPunctuationMs, pacingPunctuationDelayMs_);
+      preferences_.putUShort(kPrefPacingClauseMs, pacingClausePauseDelayMs_);
       pacingConfigChanged = true;
       break;
     default:
@@ -3295,10 +3362,12 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(
         String("Motion gestures: ") +
         (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
+    settingsMenuItems_.push_back("Sentence while paused: " + onOffLabel(pauseContextEnabled_));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());
     settingsMenuItems_.push_back("Pause behaviour: " + pauseModeLabel());
+    settingsMenuItems_.push_back("Ramp up on resume: " + onOffLabel(rampInEnabled_));
     settingsMenuItems_.push_back("Base speed: " + String(reader_.wpm()) + " WPM");
     settingsMenuItems_.push_back(uiText(UiText::LongWords) + ": " +
                                  pacingDelayLabel(pacingLongWordDelayMs_));
@@ -3306,6 +3375,8 @@ void App::rebuildSettingsMenuItems() {
                                  pacingDelayLabel(pacingComplexWordDelayMs_));
     settingsMenuItems_.push_back(uiText(UiText::Punctuation) + ": " +
                                  pacingDelayLabel(pacingPunctuationDelayMs_));
+    settingsMenuItems_.push_back(String("Clause pause: ") +
+                                 pacingDelayLabel(pacingClausePauseDelayMs_));
     settingsMenuItems_.push_back(uiText(UiText::ResetPacing));
   } else if (menuScreen_ == MenuScreen::WifiSettings) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
@@ -3329,16 +3400,30 @@ void App::applyPacingSettings() {
   pacingConfig.longWordDelayMs = pacingLongWordDelayMs_;
   pacingConfig.complexWordDelayMs = pacingComplexWordDelayMs_;
   pacingConfig.punctuationDelayMs = pacingPunctuationDelayMs_;
+  pacingConfig.clausePauseDelayMs = pacingClausePauseDelayMs_;
   reader_.setPacingConfig(pacingConfig);
+  reader_.setRampInEnabled(rampInEnabled_);
 
-  Serial.printf("[settings] pacing long=%u ms complexity=%u ms punctuation=%u ms\n",
-                static_cast<unsigned int>(pacingLongWordDelayMs_),
-                static_cast<unsigned int>(pacingComplexWordDelayMs_),
-                static_cast<unsigned int>(pacingPunctuationDelayMs_));
+  Serial.printf(
+      "[settings] pacing long=%u ms complexity=%u ms punctuation=%u ms clause=%u ms ramp=%d\n",
+      static_cast<unsigned int>(pacingLongWordDelayMs_),
+      static_cast<unsigned int>(pacingComplexWordDelayMs_),
+      static_cast<unsigned int>(pacingPunctuationDelayMs_),
+      static_cast<unsigned int>(pacingClausePauseDelayMs_), rampInEnabled_ ? 1 : 0);
   if (state_ == AppState::Menu && menuScreen_ == MenuScreen::SettingsPacing) {
     pacingCacheDirty_ = true;
   } else {
     rebuildTimeEstimateCache();
+  }
+}
+
+void App::persistCurrentWpm() {
+  const uint16_t wpm = reader_.wpm();
+  // Global pref stays the fallback for books that have no override yet.
+  preferences_.putUShort(kPrefWpm, wpm);
+  // While a book is loaded, the change is that book's preferred speed.
+  if (usingStorageBook_ && !currentBookPath_.isEmpty()) {
+    bookProgress_.saveWpm(currentBookPath_, wpm);
   }
 }
 
@@ -4973,7 +5058,7 @@ void App::saveReadingPosition(bool force) {
   preferences_.putString(kPrefBookPath, currentBookPath_);
   bookProgress_.savePosition(currentBookPath_, static_cast<uint32_t>(wordIndex),
                              static_cast<uint32_t>(reader_.wordCount()));
-  preferences_.putUShort(kPrefWpm, reader_.wpm());
+  persistCurrentWpm();
   bookProgress_.markRecent(currentBookPath_);
   // Optional auto-finish: when the reader reaches the end of the book, set the
   // finished flag. This never clears it on scrub-back -- explicit unmark only.
@@ -5036,6 +5121,16 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
                   static_cast<unsigned int>(reader_.currentIndex()),
                   bookprogress::positionKey(currentBookPath_).c_str());
   }
+
+  // Per-book WPM: a book resumes at its own saved speed when one exists, else
+  // the global pref carried over from setup/other books. The global pref stays
+  // the fallback for books opened for the first time.
+  const uint16_t globalWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
+  const uint16_t resolvedWpm =
+      bookprogress::resolveBookWpm(bookProgress_.readWpm(currentBookPath_), globalWpm);
+  reader_.setWpm(resolvedWpm);
+  Serial.printf("[app] book WPM resolved to %u (global fallback %u)\n",
+                static_cast<unsigned int>(reader_.wpm()), static_cast<unsigned int>(globalWpm));
 
   if (rebuildTimeEstimate) {
     rebuildTimeEstimateCache();
@@ -5951,6 +6046,11 @@ void App::renderActiveReader(uint32_t nowMs) {
     renderContextPreview();
   } else if (wpmFeedbackVisible_) {
     renderWpmFeedback(nowMs);
+  } else if (pauseContextEnabled_ && state_ == AppState::Paused) {
+    // Show-sentence-while-paused: the surrounding context replaces the lone
+    // RSVP word while Paused. Interaction (play-hold, scrub, taps) is unchanged
+    // -- this only swaps what is drawn on the resting paused frame.
+    renderContextPreview();
   } else {
     renderReaderWord();
   }
@@ -5995,15 +6095,68 @@ void App::handleCurrentBookReadFailure(uint32_t nowMs, const char *detail) {
   openBookPicker(articlesOnly);
 }
 
+void App::resetWordSplitFrame() {
+  wordSplitActive_ = false;
+  wordSplitShowingSecond_ = false;
+  wordSplitWordIndex_ = static_cast<size_t>(-1);
+  wordSplitFirstDurationMs_ = 0;
+}
+
+String App::currentReaderDisplayWord() {
+  const String word = reader_.currentWord();
+
+  // Splitting is a Playing-only RSVP display effect: while Paused (or scrubbing,
+  // or in scroll mode) the whole word is shown so context and scrub land on the
+  // real word. The word index/progress are never touched by the split.
+  if (state_ != AppState::Playing || scrollModeEnabled()) {
+    resetWordSplitFrame();
+    return word;
+  }
+
+  const wordsplit::SplitResult result = wordsplit::split(word);
+  if (!result.shouldSplit) {
+    resetWordSplitFrame();
+    return word;
+  }
+
+  const size_t index = reader_.currentIndex();
+  if (!wordSplitActive_ || wordSplitWordIndex_ != index) {
+    // New split word: start on the first sub-frame and apportion the word's
+    // total on-screen time between the two parts.
+    wordSplitActive_ = true;
+    wordSplitShowingSecond_ = false;
+    wordSplitWordIndex_ = index;
+    wordSplitFirstDurationMs_ =
+        wordsplit::firstPartDurationMs(result, reader_.currentWordDurationMs());
+  }
+
+  return wordSplitShowingSecond_ ? result.second : result.first;
+}
+
+bool App::updateWordSplitFrame(uint32_t nowMs) {
+  if (!wordSplitActive_ || wordSplitShowingSecond_ || state_ != AppState::Playing) {
+    return false;
+  }
+  if (wordSplitWordIndex_ != reader_.currentIndex()) {
+    return false;
+  }
+  if (reader_.elapsedInCurrentWordMs(nowMs) < wordSplitFirstDurationMs_) {
+    return false;
+  }
+  wordSplitShowingSecond_ = true;
+  return true;
+}
+
 void App::renderReaderWord() {
   applyReaderUiOrientation();
   contextViewVisible_ = false;
+  const String displayWord = currentReaderDisplayWord();
   const String beforeText = phantomWordsEnabled_ ? phantomBeforeText() : "";
   const String afterText = phantomWordsEnabled_ ? phantomAfterText() : "";
   const DisplayManager::ReaderChrome chrome = readerChrome();
   const bool showReaderFooter = readerFooterVisible();
   const String footerMetricLabel = readerFooterStatusLabel();
-  display_.renderPhantomRsvpWord(beforeText, reader_.currentWord(), afterText,
+  display_.renderPhantomRsvpWord(beforeText, displayWord, afterText,
                                  readerFontSizeIndex_, currentChapterLabel(),
                                  readingProgressPercent(), showReaderFooter, footerMetricLabel,
                                  chrome);
@@ -6155,8 +6308,13 @@ void App::renderWpmFeedback(uint32_t nowMs) {
   applyReaderUiOrientation();
   wpmFeedbackVisible_ = true;
   wpmFeedbackUntilMs_ = nowMs + kWpmFeedbackMs;
+  const String consequence = pendingWpmConsequenceLabel_;
   if (scrollModeEnabled()) {
-    renderScrollReader(nowMs, String(reader_.wpm()) + " WPM");
+    String overlay = String(reader_.wpm()) + " WPM";
+    if (!consequence.isEmpty()) {
+      overlay += "  " + consequence;
+    }
+    renderScrollReader(nowMs, overlay);
     return;
   }
 
@@ -6168,7 +6326,53 @@ void App::renderWpmFeedback(uint32_t nowMs) {
   display_.renderPhantomRsvpWordWithWpm(beforeText, reader_.currentWord(), afterText,
                                         readerFontSizeIndex_, reader_.wpm(),
                                         currentChapterLabel(), readingProgressPercent(),
-                                        readerFooterVisible(), footerMetricLabel, chrome);
+                                        readerFooterVisible(), footerMetricLabel, chrome,
+                                        consequence);
+}
+
+String App::wpmChangeConsequenceLabel(uint16_t previousWpm) const {
+  // Only meaningful when the time-estimate cache is valid; otherwise the
+  // overlay falls back to showing just the WPM, as before.
+  if (!accurateTimeEstimateEnabled_ || !timeEstimateCacheValid_) {
+    return "";
+  }
+
+  const uint16_t newWpm = reader_.wpm();
+  if (newWpm == 0 || previousWpm == 0 || newWpm == previousWpm) {
+    return "";
+  }
+
+  const size_t wordCount = reader_.wordCount();
+  if (wordCount == 0) {
+    return "";
+  }
+
+  const size_t currentIndex = std::min(reader_.currentIndex(), wordCount - 1);
+  if (wordCount <= currentIndex) {
+    return "";
+  }
+
+  // The pacing bonus is WPM-independent; only the base interval portion scales
+  // with speed. Reconstruct the whole-book estimate at both speeds so the delta
+  // reflects the real change to time-to-finish, including pacing.
+  const uint64_t remainingWords = static_cast<uint64_t>(wordCount - currentIndex);
+  const uint32_t bonusMs = estimatedPacingBonusMs(currentIndex, wordCount);
+  const uint32_t newBaseMs = static_cast<uint32_t>((remainingWords * 60000ULL) / newWpm);
+  const uint32_t oldBaseMs = static_cast<uint32_t>((remainingWords * 60000ULL) / previousWpm);
+  const int32_t newTotalMs = static_cast<int32_t>(newBaseMs + bonusMs);
+  const int32_t oldTotalMs = static_cast<int32_t>(oldBaseMs + bonusMs);
+
+  int32_t deltaMin = (newTotalMs - oldTotalMs) / 60000;
+  if (deltaMin == 0) {
+    // A real but sub-minute change: signal direction without a misleading "0".
+    return newWpm > previousWpm ? String("<1 min") : String(">-1 min");
+  }
+
+  const char sign = deltaMin < 0 ? '-' : '+';
+  if (deltaMin < 0) {
+    deltaMin = -deltaMin;
+  }
+  return String(sign) + String(deltaMin) + " min";
 }
 
 void App::renderStorageStatus(const char *title, const char *line1, const char *line2,

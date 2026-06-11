@@ -10,15 +10,26 @@
 //
 // The heuristics combine three independent bonuses on top of the base WPM
 // interval: a length bonus (longer words read slower), a complexity bonus
-// (syllables, mixed alphanumerics, dense connectors), and a punctuation pause
-// (commas, clauses, sentence ends -- with abbreviation detection so "Dr." does
-// not trigger a full stop). Each bonus is scaled and clamped by PacingConfig.
+// (syllables, mixed alphanumerics, dense connectors), and a punctuation pause.
+// The punctuation pause itself splits two ways: a sentence-end pause for '.'
+// '!' '?' (and ellipsis), governed by punctuationDelayMs, and a separate
+// clause pause for ',' ';' ':' '-', governed by clausePauseDelayMs -- so the
+// reader can hold full stops longer than commas independently. Abbreviation
+// detection keeps "Dr." from triggering a full stop. Each bonus is scaled and
+// clamped by PacingConfig.
 namespace wordpacing {
 
 struct PacingConfig {
   uint16_t longWordDelayMs = 200;
   uint16_t complexWordDelayMs = 200;
+  // Sentence-end pause base ('.' '!' '?', ellipsis). Historically this single
+  // delay also covered clauses; clausePauseDelayMs now separates them. The
+  // struct default stays equal to clausePauseDelayMs so callers that build a
+  // default PacingConfig keep the pre-split behaviour.
   uint16_t punctuationDelayMs = 200;
+  // Clause pause base (',' ';' ':' '-'). Default mirrors punctuationDelayMs;
+  // the device sets its NVS default to half of the punctuation default.
+  uint16_t clausePauseDelayMs = 200;
   uint8_t longWordScalePercent = 100;
   uint8_t complexWordScalePercent = 100;
   uint8_t punctuationScalePercent = 100;

@@ -49,6 +49,14 @@ constexpr const char *kPrefPacingComplexMs = "pace_cms";
 constexpr const char *kPrefPacingPunctuationMs = "pace_pms";
 constexpr const char *kPrefPauseMode = "pause_md";
 constexpr const char *kPrefAccurateTime = "time_est_a";
+// Clause pause base delay (',' ';' ':' '-'), split out from the sentence-end
+// punctuation delay (kPrefPacingPunctuationMs). Defaults to half the
+// punctuation default on the device.
+constexpr const char *kPrefPacingClauseMs = "pace_cls";
+// Ramp-in on resume: ease the first words back up to the set WPM. Default ON.
+constexpr const char *kPrefRampIn = "ramp_on";
+// Show the surrounding sentence (context preview) while Paused. Default OFF.
+constexpr const char *kPrefPauseContext = "pause_ctx";
 
 // Reading statistics. The authoritative store is an SD JSON file (see
 // App stats persistence); these mirror the all-time totals so the stats screen

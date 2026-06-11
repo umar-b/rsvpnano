@@ -69,6 +69,47 @@ void test_word_ends_sentence_classification() {
   TEST_ASSERT_TRUE(wordpacing::wordEndsSentence("fits.", false));
 }
 
+void test_clause_delay_is_independent_of_sentence_delay() {
+  // Drop the clause delay to zero (clamped to 25% scale floor of its delay,
+  // which is a separate field) by halving its base delay, while keeping the
+  // sentence-end delay full. The comma pause shrinks; the full stop does not.
+  wordpacing::PacingConfig cfg = defaultConfig();
+  cfg.clausePauseDelayMs = 0;  // clamps to 0 in clampConfig (delays floor at 0)
+  const wordpacing::PacingConfig clamped = wordpacing::clampConfig(cfg);
+
+  const uint32_t comma = wordpacing::bonusMsForWord("wait,", false, clamped);
+  const uint32_t period = wordpacing::bonusMsForWord("done.", false, clamped);
+  TEST_ASSERT_EQUAL_UINT32(0, comma);          // clause delay zeroed
+  TEST_ASSERT_GREATER_THAN_UINT32(0, period);  // sentence delay untouched
+}
+
+void test_sentence_delay_change_does_not_affect_clause() {
+  // Halving the punctuation (sentence-end) delay must leave the comma alone.
+  wordpacing::PacingConfig cfg = defaultConfig();
+  cfg.punctuationDelayMs = 100;  // sentence-end base halved
+  cfg.clausePauseDelayMs = 200;  // clause base untouched
+  const uint32_t commaDefault = wordpacing::bonusMsForWord("wait,", false, defaultConfig());
+  const uint32_t comma = wordpacing::bonusMsForWord("wait,", false, cfg);
+  TEST_ASSERT_EQUAL_UINT32(commaDefault, comma);
+}
+
+void test_default_config_keeps_legacy_combined_behaviour() {
+  // With the default config the clause and sentence delays are equal (200), so
+  // the pre-split expectations still hold: comma < period (same as before).
+  const wordpacing::PacingConfig cfg = defaultConfig();
+  const uint32_t comma = wordpacing::bonusMsForWord("done,", false, cfg);
+  const uint32_t period = wordpacing::bonusMsForWord("done.", false, cfg);
+  TEST_ASSERT_GREATER_THAN_UINT32(comma, period);
+}
+
+void test_clause_delay_scales_semicolon_and_dash_too() {
+  wordpacing::PacingConfig cfg = defaultConfig();
+  cfg.clausePauseDelayMs = 0;
+  const wordpacing::PacingConfig clamped = wordpacing::clampConfig(cfg);
+  TEST_ASSERT_EQUAL_UINT32(0, wordpacing::bonusMsForWord("thus;", false, clamped));
+  TEST_ASSERT_EQUAL_UINT32(0, wordpacing::bonusMsForWord("so-", false, clamped));
+}
+
 void test_starts_with_lowercase_letter() {
   TEST_ASSERT_TRUE(wordpacing::startsWithLowercaseLetter("hello"));
   TEST_ASSERT_FALSE(wordpacing::startsWithLowercaseLetter("Hello"));
@@ -86,6 +127,10 @@ int main(void) {
   RUN_TEST(test_abbreviation_does_not_get_a_sentence_pause);
   RUN_TEST(test_punctuation_scale_zero_floor_still_applies_some_pause);
   RUN_TEST(test_word_ends_sentence_classification);
+  RUN_TEST(test_clause_delay_is_independent_of_sentence_delay);
+  RUN_TEST(test_sentence_delay_change_does_not_affect_clause);
+  RUN_TEST(test_default_config_keeps_legacy_combined_behaviour);
+  RUN_TEST(test_clause_delay_scales_semicolon_and_dash_too);
   RUN_TEST(test_starts_with_lowercase_letter);
   return UNITY_END();
 }
