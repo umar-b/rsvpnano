@@ -158,6 +158,25 @@ bool FocusTimer::available() const { return imu_.available(); }
 
 bool FocusTimer::isActiveTimerRunning() const { return timerRunning_; }
 
+bool FocusTimer::hasLiveSession() const {
+  switch (state_) {
+    case State::WaitForTouchStart:
+    case State::TouchRunning:
+    case State::WaitAfterTouch:
+    case State::WorkRunning:
+    case State::BreakRunning:
+    case State::WaitAfterWork:
+    case State::WaitAfterBreak:
+      return true;
+    case State::Unavailable:
+    case State::GenreSelect:
+    case State::Cancelled:
+    case State::Complete:
+    default:
+      return false;
+  }
+}
+
 FocusTimer::State FocusTimer::state() const { return state_; }
 
 FocusTimer::Genre FocusTimer::genre() const { return genre_; }

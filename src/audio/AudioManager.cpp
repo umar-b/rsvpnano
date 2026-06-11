@@ -6,11 +6,19 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <cmath>
+
+#include "audio/Jingle.h"
 #include "board/BoardConfig.h"
 
 namespace {
 
 constexpr char kTag[] = "audio";
+
+// Per-note synthesis chunk: render up to this many frames at a time and stream
+// them to I2S, so a multi-note jingle needs only a small stack buffer instead
+// of a buffer sized to the whole (~1 s) sequence.
+constexpr size_t kJingleChunkFrames = 256;
 
 constexpr uint8_t kIoConfigRegister = 0x03;
 constexpr uint8_t kIoOutputRegister = 0x01;
@@ -102,6 +110,34 @@ bool AudioManager::beep() {
   }
 
   return writeBeepBuffer();
+}
+
+bool AudioManager::playJingle(const jingle::Sequence &sequence) {
+  if (muted_ || volumePercent_ == 0) {
+    // Silenced by the user: report "handled" so callers don't fall back to a
+    // backlight flash. Same semantics as beep().
+    return true;
+  }
+
+  if (!jingle::isWithinBudget(sequence)) {
+    ESP_LOGW(kTag, "Rejecting out-of-budget jingle");
+    return false;
+  }
+
+  if (!prepareForBeep()) {
+    return false;
+  }
+
+  if (synthesizeAndWriteJingle(sequence)) {
+    return true;
+  }
+
+  ESP_LOGW(kTag, "Retrying jingle after recovering output path");
+  if (!recoverOutputPath()) {
+    return false;
+  }
+
+  return synthesizeAndWriteJingle(sequence);
 }
 
 bool AudioManager::available() const { return available_; }
@@ -346,6 +382,75 @@ bool AudioManager::writeBeepBuffer() {
     totalWritten += bytesWritten;
   }
 
+  return true;
+}
+
+bool AudioManager::writeSamples(const int16_t *samples, size_t sampleCount) {
+  const uint8_t *data = reinterpret_cast<const uint8_t *>(samples);
+  const size_t totalSize = sampleCount * sizeof(int16_t);
+  size_t totalWritten = 0;
+
+  while (totalWritten < totalSize) {
+    size_t bytesWritten = 0;
+    const esp_err_t result = i2s_write(kI2sPort, data + totalWritten, totalSize - totalWritten,
+                                       &bytesWritten, pdMS_TO_TICKS(250));
+    if (result != ESP_OK || bytesWritten == 0) {
+      ESP_LOGW(kTag, "Jingle write failed: %s", esp_err_to_name(result));
+      return false;
+    }
+    totalWritten += bytesWritten;
+  }
+  return true;
+}
+
+bool AudioManager::synthesizeAndWriteJingle(const jingle::Sequence &sequence) {
+  // Stream each note in small interleaved-stereo windows. The sine phase and
+  // the click-avoidance envelope are both functions of the absolute frame index
+  // within the note (mirroring jingle::renderNote / envelopeScaleQ10), so a
+  // window can be synthesised without a buffer sized to the whole note.
+  int16_t chunk[kJingleChunkFrames * jingle::kChannels] = {};
+
+  const size_t count =
+      sequence.count > jingle::kMaxNotes ? jingle::kMaxNotes : sequence.count;
+  for (size_t n = 0; n < count; ++n) {
+    const jingle::Note &note = sequence.notes[n];
+    const size_t noteFrames =
+        jingle::framesForMs(note.durationMs) + jingle::framesForMs(note.gapMs);
+
+    const size_t toneFrames = jingle::framesForMs(note.durationMs);
+    size_t frameOffset = 0;
+    while (frameOffset < noteFrames) {
+      const size_t framesThisChunk =
+          (noteFrames - frameOffset) < kJingleChunkFrames ? (noteFrames - frameOffset)
+                                                          : kJingleChunkFrames;
+      // Phase + envelope are functions of the absolute frame-in-note, so we can
+      // stream the note in windows without a full-length buffer: each window's
+      // samples are computed from their absolute index within the note.
+      for (size_t f = 0; f < framesThisChunk; ++f) {
+        const size_t absFrame = frameOffset + f;
+        int16_t sample = 0;
+        if (absFrame < toneFrames && note.frequencyHz != 0) {
+          const int32_t scale = jingle::envelopeScaleQ10(absFrame, toneFrames);
+          const double phase = (2.0 * M_PI * static_cast<double>(note.frequencyHz) *
+                                static_cast<double>(absFrame)) /
+                               static_cast<double>(jingle::kSampleRateHz);
+          const int32_t raw =
+              static_cast<int32_t>(sin(phase) * static_cast<double>(jingle::kAmplitude));
+          int32_t scaled = raw * scale / 1024;
+          if (scaled > 32767) scaled = 32767;
+          if (scaled < -32768) scaled = -32768;
+          sample = static_cast<int16_t>(scaled);
+        }
+        chunk[f * jingle::kChannels] = sample;
+        chunk[f * jingle::kChannels + 1] = sample;
+      }
+
+      if (!writeSamples(chunk, framesThisChunk * jingle::kChannels)) {
+        return false;
+      }
+      frameOffset += framesThisChunk;
+    }
+  }
   return true;
 }
 

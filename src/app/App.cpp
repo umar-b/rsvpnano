@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "audio/Jingle.h"
 #include "board/BoardConfig.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
@@ -54,6 +55,7 @@ constexpr uint16_t kStandbyLifeCellPixels = 2;
 constexpr uint16_t kStandbyLifeColumns = BoardConfig::DISPLAY_WIDTH / kStandbyLifeCellPixels;
 constexpr uint16_t kStandbyLifeRows = BoardConfig::DISPLAY_HEIGHT / kStandbyLifeCellPixels;
 constexpr uint32_t kChapterTransitionMs = 1400;
+constexpr uint32_t kSprintOverlayMs = 2200;
 constexpr uint8_t kBrightnessLevels[] = {40, 55, 70, 85, 100};
 constexpr uint8_t kNightBrightnessLevels[] = {35, 40, 45, 50, 55};
 constexpr size_t kBrightnessLevelCount = sizeof(kBrightnessLevels) / sizeof(kBrightnessLevels[0]);
@@ -152,11 +154,12 @@ constexpr size_t kSettingsDisplayScreensaverIndex = 7;
 constexpr size_t kSettingsDisplayIdleStandbyIndex = 8;
 constexpr size_t kSettingsDisplayMuteIndex = 9;
 constexpr size_t kSettingsDisplayVolumeIndex = 10;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 11;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
-constexpr size_t kSettingsDisplayLanguageIndex = 14;
-constexpr size_t kSettingsDisplayMotionPauseIndex = 15;
+constexpr size_t kSettingsDisplayChimeIndex = 11;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 12;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 13;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 14;
+constexpr size_t kSettingsDisplayLanguageIndex = 15;
+constexpr size_t kSettingsDisplayMotionPauseIndex = 16;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -489,6 +492,7 @@ void App::begin() {
   if (audioVolumePercent_ > 100) {
     audioVolumePercent_ = 100;
   }
+  soundChimeEnabled_ = preferences_.getBool(kPrefSoundChime, soundChimeEnabled_);
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -702,8 +706,14 @@ void App::update(uint32_t nowMs) {
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
+  maybeUpdateBackgroundFocusTimer(nowMs);
   updateFocusTimer(nowMs);
-  updateReader(nowMs);
+  if (updateSprintOverlay(nowMs)) {
+    // The "Block done" overlay is up; hold it and skip reader rendering so it
+    // isn't immediately overwritten. Touch/standby still run below.
+  } else {
+    updateReader(nowMs);
+  }
   updateStandbyDecision(nowMs);
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
@@ -714,7 +724,9 @@ void App::update(uint32_t nowMs) {
   }
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
-    renderActiveReader(nowMs);
+    if (!sprintOverlayVisible_) {
+      renderActiveReader(nowMs);
+    }
   } else if (batteryChanged && state_ == AppState::Menu) {
     renderMenu();
   }
@@ -1252,6 +1264,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   if (audioVolumePercent_ > 100) {
     audioVolumePercent_ = 100;
   }
+  soundChimeEnabled_ = preferences_.getBool(kPrefSoundChime, soundChimeEnabled_);
   uiLanguage_ =
       Localization::sanitizeLanguage(preferences_.getUChar(
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
@@ -2177,7 +2190,12 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
 }
 
 void App::openFocusTimer() {
-  focusTimer_.open();
+  // Resume a backgrounded session (e.g. a work-block sprint left running when
+  // the reader exited the page) instead of clearing it. open() always resets to
+  // genre select, so only call it when nothing is live.
+  if (!focusTimer_.hasLiveSession()) {
+    focusTimer_.open();
+  }
   rebuildFocusTimerGenreMenuItems();
   focusTimerGenreSelectedIndex_ =
       focusTimerGenreMenuItems_.size() > 1 ? kFocusTimerGenreFirstIndex : kFocusTimerGenreBackIndex;
@@ -2194,9 +2212,14 @@ void App::updateFocusTimer(uint32_t nowMs) {
   }
 
   focusTimer_.update(nowMs);
+  // Keep sprint accounting in sync even on-page (e.g. a work block can complete
+  // while the page is open). syncSprintPlayingState handles segment edges;
+  // begin/finish detection lives in maybeUpdateBackgroundFocusTimer's shared
+  // helper path, invoked below.
   if (focusTimer_.consumeCompletionCue()) {
     playFocusTimerCompletionCue();
   }
+  trackFocusWorkBlock(nowMs, /*allowOverlay=*/false);
   if (focusTimer_.state() == FocusTimer::State::GenreSelect) {
     menuScreen_ = MenuScreen::FocusTimerGenres;
     rebuildFocusTimerGenreMenuItems();
@@ -2207,8 +2230,125 @@ void App::updateFocusTimer(uint32_t nowMs) {
   renderFocusTimerSession();
 }
 
+// Drive the focus timer and sprint accounting while the reader is OFF the
+// focus-timer page. updateFocusTimer owns the on-page path (rendering, cue,
+// orientation faces); here we only advance the state machine for a running
+// block and surface the "Block done" sprint overlay.
+void App::maybeUpdateBackgroundFocusTimer(uint32_t nowMs) {
+  const bool onPage =
+      state_ == AppState::Menu && menuScreen_ == MenuScreen::FocusTimerSession;
+  if (onPage) {
+    return;  // updateFocusTimer handles this frame.
+  }
+
+  // Only spend cycles when there is something to track: a running block or an
+  // in-flight sprint (so we can detect its completion).
+  if (!focusTimer_.isActiveTimerRunning() && !sprintActive_) {
+    return;
+  }
+
+  focusTimer_.update(nowMs);
+  // The completion cue, off-page, is delivered as the sprint overlay's arpeggio
+  // rather than the on-page cue; consume it so it doesn't fire twice when the
+  // page is reopened.
+  const bool cuePending = focusTimer_.consumeCompletionCue();
+  trackFocusWorkBlock(nowMs, /*allowOverlay=*/true);
+  (void)cuePending;
+}
+
+// Shared sprint lifecycle: begin when a work block starts running, keep the
+// Playing segment in sync, and finish (with optional overlay) when the work
+// block count increases. `allowOverlay` is true only off-page.
+void App::trackFocusWorkBlock(uint32_t nowMs, bool allowOverlay) {
+  const bool workRunning = focusTimer_.state() == FocusTimer::State::WorkRunning &&
+                           focusTimer_.isActiveTimerRunning();
+
+  if (workRunning && !sprintActive_) {
+    // A new work block began running. Start a sprint anchored at the reader's
+    // current position; open a segment if we're already Playing.
+    sprintActive_ = true;
+    sprintWorkBlockCountAtStart_ = focusTimer_.completedWorkBlocks();
+    sprintWasPlaying_ = (state_ == AppState::Playing);
+    sprint_.beginBlock(reader_.currentIndex(), sprintWasPlaying_);
+  }
+
+  if (sprintActive_) {
+    syncSprintPlayingState(nowMs);
+    // The work block completed when its completed count ticks up beyond the
+    // count captured at sprint start.
+    if (focusTimer_.completedWorkBlocks() > sprintWorkBlockCountAtStart_) {
+      finishReadingSprint(nowMs, allowOverlay);
+    } else if (!focusTimer_.isActiveTimerRunning() &&
+               focusTimer_.state() != FocusTimer::State::WorkRunning) {
+      // Cancelled / abandoned before completing: drop the sprint silently.
+      sprint_.finishBlock(reader_.currentIndex());
+      sprintActive_ = false;
+    }
+  }
+}
+
+void App::syncSprintPlayingState(uint32_t nowMs) {
+  (void)nowMs;
+  if (!sprintActive_) {
+    return;
+  }
+  const bool playing = (state_ == AppState::Playing);
+  if (playing && !sprintWasPlaying_) {
+    sprint_.enterPlaying(reader_.currentIndex());
+  } else if (!playing && sprintWasPlaying_) {
+    sprint_.leavePlaying(reader_.currentIndex());
+  }
+  sprintWasPlaying_ = playing;
+}
+
+void App::finishReadingSprint(uint32_t nowMs, bool allowOverlay) {
+  if (!sprintActive_) {
+    return;
+  }
+  const uint32_t words = sprint_.finishBlock(reader_.currentIndex());
+  sprintActive_ = false;
+  sprintWasPlaying_ = false;
+
+  if (!allowOverlay) {
+    return;  // On-page completion shows the timer's own prompt + cue.
+  }
+
+  sprintOverlayWords_ = words;
+  sprintOverlayVisible_ = true;
+  sprintOverlayUntilMs_ = nowMs + kSprintOverlayMs;
+  playFocusTimerCompletionCue();
+  renderSprintOverlay();
+}
+
+bool App::updateSprintOverlay(uint32_t nowMs) {
+  if (!sprintOverlayVisible_) {
+    return false;
+  }
+  if (nowMs < sprintOverlayUntilMs_) {
+    return true;
+  }
+  sprintOverlayVisible_ = false;
+  // Restore the normal reader view for the current state.
+  if (state_ == AppState::Playing || state_ == AppState::Paused) {
+    renderActiveReader(nowMs);
+  }
+  return false;
+}
+
+void App::renderSprintOverlay() {
+  const String line1 = String(static_cast<unsigned long>(sprintOverlayWords_)) + " words read";
+  display_.renderStatus("Block done", line1, "Nice focus");
+}
+
 void App::resetFocusTimer() {
-  focusTimer_.abandon();
+  // Leaving the focus-timer page while a block is RUNNING keeps the timer alive
+  // in the background (the reader can read during a work-block sprint). Only
+  // abandon the session when nothing is running -- otherwise the background
+  // driver (maybeUpdateBackgroundFocusTimer) keeps advancing it and surfaces
+  // the "Block done" overlay on completion.
+  if (!focusTimer_.isActiveTimerRunning()) {
+    focusTimer_.abandon();
+  }
   focusTimerCancelHoldTriggered_ = false;
   pausedTouch_.active = false;
   focusTimerGenreSelectedIndex_ = kFocusTimerGenreBackIndex;
@@ -2638,6 +2778,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
         return;
       case kSettingsDisplayVolumeIndex:
         cycleAudioVolume();
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
+      case kSettingsDisplayChimeIndex:
+        toggleSoundChime();
         rebuildSettingsMenuItems();
         renderSettings();
         return;
@@ -3285,6 +3430,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Idle standby: " + idleStandbyLabel());
     settingsMenuItems_.push_back("Mute audio: " + audioMuteLabel());
     settingsMenuItems_.push_back("Volume: " + audioVolumeLabel());
+    settingsMenuItems_.push_back("Chapter chime: " + soundChimeLabel());
     settingsMenuItems_.push_back("Reading battery: " +
                                  onOffLabel(readerBatteryVisibleWhilePlaying_));
     settingsMenuItems_.push_back("Reading chapter: " +
@@ -4687,9 +4833,16 @@ void App::cycleAudioVolume() {
   applyAudioSettings();
 }
 
+void App::toggleSoundChime() {
+  soundChimeEnabled_ = !soundChimeEnabled_;
+  preferences_.putBool(kPrefSoundChime, soundChimeEnabled_);
+}
+
 String App::audioMuteLabel() const { return audioMuted_ ? "On" : "Off"; }
 
 String App::audioVolumeLabel() const { return String(audioVolumePercent_) + "%"; }
+
+String App::soundChimeLabel() const { return soundChimeEnabled_ ? "On" : "Off"; }
 
 uint32_t App::standbyRngSeed(uint32_t nowMs) const {
   return nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2654435761UL) ^
@@ -4980,6 +5133,9 @@ void App::saveReadingPosition(bool force) {
   if (reader_.atEnd() && !bookProgress_.isFinished(currentBookPath_)) {
     bookProgress_.setFinished(currentBookPath_, true);
     Serial.printf("[app] auto-marked finished book=%s\n", currentBookPath_.c_str());
+    if (soundChimeEnabled_) {
+      audio_.playJingle(jingle::bookFanfare());
+    }
   }
   lastSavedWordIndex_ = wordIndex;
   Serial.printf("[app] saved position word=%u book=%s\n", static_cast<unsigned int>(wordIndex),
@@ -5305,6 +5461,9 @@ bool App::maybeStartChapterTransition(size_t previousWordIndex, size_t currentWo
     contextViewVisible_ = false;
     wpmFeedbackVisible_ = false;
     reader_.seekTo(chapterWordIndex);
+    if (soundChimeEnabled_) {
+      audio_.playJingle(jingle::chapterChime());
+    }
     renderChapterTransition();
     Serial.printf("[chapter] transition %u/%u word=%u title=%s\n",
                   static_cast<unsigned int>(i + 1),
@@ -5798,7 +5957,7 @@ String App::focusTimerCountsLabel() const {
 }
 
 void App::playFocusTimerCompletionCue() {
-  if (audio_.beep()) {
+  if (audio_.playJingle(jingle::completionArpeggio())) {
     return;
   }
 

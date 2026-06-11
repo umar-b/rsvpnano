@@ -3,10 +3,18 @@
 #include <Arduino.h>
 #include <driver/i2s.h>
 
+#include "audio/Jingle.h"
+
 class AudioManager {
  public:
   bool begin();
   bool beep();
+  // Play a named note sequence (see audio/Jingle.h). Synthesised on the fly and
+  // streamed to I2S in small chunks so it needs no large buffer. Obeys the same
+  // mute/volume gating as beep(): when muted (or volume 0) it returns true --
+  // "handled, silently" -- without touching the codec. Sequences that exceed
+  // the jingle duration budget are rejected (returns false) rather than played.
+  bool playJingle(const jingle::Sequence &sequence);
   bool available() const;
 
   // Device-wide audio controls. Muting gates beep() entirely (it returns true
@@ -35,6 +43,8 @@ class AudioManager {
   bool prepareForBeep();
   bool recoverOutputPath();
   bool writeBeepBuffer();
+  bool writeSamples(const int16_t *samples, size_t sampleCount);
+  bool synthesizeAndWriteJingle(const jingle::Sequence &sequence);
   bool readIoRegister(uint8_t reg, uint8_t &value);
   bool writeIoRegister(uint8_t reg, uint8_t value);
   bool readCodecRegister(uint8_t reg, uint8_t &value);

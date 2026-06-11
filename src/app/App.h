@@ -28,6 +28,7 @@
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
 #include "timer/FocusTimer.h"
+#include "timer/SprintAccount.h"
 #include "update/OtaUpdater.h"
 #include "usb/UsbMassStorageManager.h"
 
@@ -314,8 +315,19 @@ class App {
   void applyAudioSettings();
   void toggleAudioMute();
   void cycleAudioVolume();
+  void toggleSoundChime();
   String audioMuteLabel() const;
   String audioVolumeLabel() const;
+  String soundChimeLabel() const;
+  // Reading-sprint background tracking. The focus-timer work block keeps
+  // advancing while the reader leaves its page; these manage that lifecycle and
+  // the "Block done" overlay.
+  void syncSprintPlayingState(uint32_t nowMs);
+  void maybeUpdateBackgroundFocusTimer(uint32_t nowMs);
+  void trackFocusWorkBlock(uint32_t nowMs, bool allowOverlay);
+  void finishReadingSprint(uint32_t nowMs, bool allowOverlay);
+  bool updateSprintOverlay(uint32_t nowMs);
+  void renderSprintOverlay();
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   uint32_t standbyRngSeed(uint32_t nowMs) const;
@@ -476,6 +488,15 @@ class App {
   uint32_t statsPlayStartMs_ = 0;
   size_t statsPlayStartWordIndex_ = static_cast<size_t>(-1);
   uint32_t statsSessionDayKey_ = 0;
+  // Reading sprint: words read while a focus-timer work block runs in the
+  // background. The overlay shows the result briefly when the block completes.
+  sprint::SprintAccount sprint_;
+  bool sprintActive_ = false;        // a work block is being tracked
+  bool sprintWasPlaying_ = false;    // last-known Playing state, for segment edges
+  bool sprintOverlayVisible_ = false;
+  uint32_t sprintOverlayUntilMs_ = 0;
+  uint32_t sprintOverlayWords_ = 0;
+  uint8_t sprintWorkBlockCountAtStart_ = 0;  // completedWorkBlocks at sprint begin
   size_t restartConfirmSelectedIndex_ = 0;
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
   size_t updateConfirmSelectedIndex_ = 0;
@@ -485,6 +506,7 @@ class App {
   uint8_t idleStandbyMinutes_ = 0;  // 0 = off (preserves prior behaviour)
   uint8_t audioVolumePercent_ = 100;
   bool audioMuted_ = false;
+  bool soundChimeEnabled_ = false;  // chapter chime + book fanfare; default OFF
   touchgesture::GestureConfig gestureConfig_;
   uint16_t pacingLongWordDelayMs_ = 200;
   uint16_t pacingComplexWordDelayMs_ = 200;

@@ -310,6 +310,17 @@ The Focus Timer uses the device orientation to guide work and break blocks.
 
 Touch-and-hold during an active timer cancels the current timer block.
 
+While a work block is running you can leave the timer page (hold `PWR`, then
+`Resume`) and read normally -- the work block keeps counting down in the
+background. When it finishes, a brief "Block done" overlay shows how many words
+you read during the block, accompanied by a completion arpeggio. Reopen `Focus
+Timer` to pick up the next block prompt.
+
+Audio cues use the device speaker: a completion arpeggio for finished focus
+blocks and reading sprints. A separate `Chapter chime` toggle (Settings ->
+Display, default off) also plays a soft chime at each chapter boundary and a
+short fanfare when you finish a book.
+
 ### SD Card Check
 
 Run `SD card check` if books or articles do not appear. It checks whether the card mounts, whether it can write, and whether the expected library folders exist.

@@ -41,6 +41,10 @@ class FocusTimer {
 
   bool available() const;
   bool isActiveTimerRunning() const;
+  // True when a session is in progress -- a block is running OR the timer is
+  // between blocks waiting for the next orientation flip. Lets App reopen the
+  // Focus Timer page onto a backgrounded session instead of clearing it.
+  bool hasLiveSession() const;
   State state() const;
   Genre genre() const;
   BoardConfig::UiOrientation uiOrientation() const;

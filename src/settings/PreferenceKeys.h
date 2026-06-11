@@ -68,6 +68,9 @@ constexpr const char *kPrefGestureHoldMs = "gest_hold";
 // Audio.
 constexpr const char *kPrefAudioMuted = "aud_mute";
 constexpr const char *kPrefAudioVolume = "aud_vol";
+// Chapter chime + book fanfare cue. Default OFF: a chime on every chapter is
+// opinionated, so the reader opts in.
+constexpr const char *kPrefSoundChime = "snd_chime";
 
 // Wi-Fi + OTA.
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
