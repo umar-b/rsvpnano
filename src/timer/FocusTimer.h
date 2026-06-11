@@ -5,7 +5,7 @@
 
 #include "board/BoardConfig.h"
 #include "board/ImuDriver.h"
-#include "timer/Orientation.h"
+#include "motion/Orientation.h"
 
 class FocusTimer {
  public:

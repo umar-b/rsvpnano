@@ -56,6 +56,9 @@ constexpr const char *kPrefAccurateTime = "time_est_a";
 constexpr const char *kPrefStatsWords = "st_words";
 constexpr const char *kPrefStatsMs = "st_ms";
 
+// Hands-free IMU shortcut: face-down pauses the reader while playing.
+constexpr const char *kPrefImuShortcuts = "imu_short";
+
 // Gesture sensitivity (raw px / ms; presets on-device, raw via companion).
 constexpr const char *kPrefGestureSwipePx = "gest_swp";
 constexpr const char *kPrefGestureTapPx = "gest_tap";

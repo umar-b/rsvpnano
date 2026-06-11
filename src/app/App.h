@@ -14,9 +14,12 @@
 #include "app/TouchGesture.h"
 #include "audio/AudioManager.h"
 #include "board/BatteryManager.h"
+#include "board/ImuDriver.h"
 #include "display/DisplayManager.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
+#include "motion/FlickDetector.h"
+#include "motion/StandbyDecider.h"
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
@@ -303,7 +306,6 @@ class App {
   void exitStandby(uint32_t nowMs);
   void handleStandbyTouchWake(uint32_t nowMs);
   void noteUserInput(uint32_t nowMs);
-  void maybeAutoStandby(uint32_t nowMs);
   void cycleIdleStandbyTimeout();
   String idleStandbyLabel() const;
   void loadGestureConfig();
@@ -407,11 +409,25 @@ class App {
   String focusTimerCountsLabel() const;
   void playFocusTimerCompletionCue();
 
+  // Standby decision + motion gestures. The decider owns the timing (set-down,
+  // lift-to-wake, wake grace, idle timeout); App polls the sensor, feeds it
+  // samples and context, and executes its verdicts. The flick detector shares
+  // the sample stream: a sharp flick rewinds to the previous sentence.
+  void updateStandbyDecision(uint32_t nowMs);
+  motion::StandbyContext standbyContext() const;
+  void rewindToPreviousSentence(uint32_t nowMs);
+
   AppState state_ = AppState::Booting;
   AppState standbyReturnState_ = AppState::Paused;
   DisplayManager display_;
   AudioManager audio_;
   FocusTimer focusTimer_;
+  ImuDriver imuShortcutImu_;
+  bool imuShortcutsEnabled_ = false;
+  bool imuShortcutSensorReady_ = false;
+  uint32_t imuShortcutLastPollMs_ = 0;
+  motion::StandbyDecider standbyDecider_;
+  motion::FlickDetector flickDetector_;
   ReadingLoop reader_;
   ButtonHandler button_;
   ButtonHandler powerButton_;
@@ -437,9 +453,7 @@ class App {
   uint32_t lastScrollAnimationRenderMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
-  uint32_t lastInputMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
-  uint32_t standbyEnteredMs_ = 0;
   uint32_t lastStandbyFrameMs_ = 0;
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
@@ -528,6 +542,9 @@ class App {
   bool standbyComboHandled_ = false;
   bool standbyButtonsReleased_ = false;
   bool standbyScreenOffActive_ = false;
+  // Set down screen-down: this standby entry goes screen-off regardless of
+  // the screensaver preference. Cleared on wake.
+  bool standbyScreenOffForced_ = false;
   bool standbyWakeTouchActive_ = false;
   uint16_t standbyWakeStartX_ = 0;
   uint16_t standbyWakeStartY_ = 0;

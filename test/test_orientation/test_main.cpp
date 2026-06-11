@@ -1,6 +1,6 @@
 #include <unity.h>
 
-#include "timer/Orientation.h"
+#include "motion/Orientation.h"
 
 namespace {
 
@@ -83,9 +83,22 @@ void test_reset_clears_everything() {
   TEST_ASSERT_EQUAL_INT(as_int(orientation::Side::LongSide), as_int(s.stable()));
 }
 
+void test_screen_down_keys_on_z_sign() {
+  // This board reads z ~ -1 g screen-down, so callers pass faceDownZSign = -1.
+  TEST_ASSERT_TRUE(orientation::isScreenDown(0.02f, 0.05f, -0.99f, -1));
+  // Screen up (z ~ +1) must NOT count as down.
+  TEST_ASSERT_FALSE(orientation::isScreenDown(0.0f, 0.05f, 1.03f, -1));
+  // Not flat (resting on a long side) is never screen-down.
+  TEST_ASSERT_FALSE(orientation::isScreenDown(0.0f, -0.94f, 0.0f, -1));
+  // Sign flips with the board convention.
+  TEST_ASSERT_TRUE(orientation::isScreenDown(0.0f, 0.0f, 0.99f, 1));
+  TEST_ASSERT_FALSE(orientation::isScreenDown(0.0f, 0.0f, -0.99f, 1));
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_classify_each_face);
+  RUN_TEST(test_screen_down_keys_on_z_sign);
   RUN_TEST(test_classify_between_faces_is_unknown);
   RUN_TEST(test_stabilizer_starts_unknown);
   RUN_TEST(test_stabilizer_promotes_only_after_window);

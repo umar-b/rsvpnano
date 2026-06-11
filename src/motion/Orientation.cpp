@@ -1,4 +1,4 @@
-#include "timer/Orientation.h"
+#include "motion/Orientation.h"
 
 #include <math.h>
 
@@ -9,11 +9,15 @@ constexpr uint32_t kStableMs = 700;
 constexpr float kSideAxisThreshold = 0.78f;
 constexpr float kCrossAxisLimit = 0.42f;
 constexpr float kFlatAxisThreshold = 0.84f;
+// Flatness demands a tighter cross-axis bound than the side faces; classify()
+// and isScreenDown() must share it so "flat" means one thing.
+constexpr float kFlatCrossAxisLimit = 0.30f;
 
 }  // namespace
 
 Side classify(float x, float y, float z) {
-  if (fabsf(z) >= kFlatAxisThreshold && fabsf(x) <= 0.30f && fabsf(y) <= 0.30f) {
+  if (fabsf(z) >= kFlatAxisThreshold && fabsf(x) <= kFlatCrossAxisLimit &&
+      fabsf(y) <= kFlatCrossAxisLimit) {
     return Side::FlatBack;
   }
 
@@ -30,6 +34,12 @@ Side classify(float x, float y, float z) {
   }
 
   return Side::Unknown;
+}
+
+bool isScreenDown(float x, float y, float z, int faceDownZSign) {
+  const float orientedZ = z * static_cast<float>(faceDownZSign);
+  return orientedZ >= kFlatAxisThreshold && fabsf(x) <= kFlatCrossAxisLimit &&
+         fabsf(y) <= kFlatCrossAxisLimit;
 }
 
 void Stabilizer::reset() {

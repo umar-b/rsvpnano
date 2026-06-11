@@ -49,7 +49,6 @@ constexpr uint32_t kNominalBatteryRuntimeMinutes = 330;
 constexpr uint32_t kBatteryLowWarningRepeatMs = 5UL * 60UL * 1000UL;
 constexpr uint32_t kBatteryWarningVisibleMs = 2500;
 constexpr uint32_t kBatteryShutdownNoticeMs = 1500;
-constexpr uint32_t kStandbyWakeGraceMs = 900;
 constexpr uint32_t kStandbyFrameMs = 160;
 constexpr uint16_t kStandbyLifeCellPixels = 2;
 constexpr uint16_t kStandbyLifeColumns = BoardConfig::DISPLAY_WIDTH / kStandbyLifeCellPixels;
@@ -157,6 +156,7 @@ constexpr size_t kSettingsDisplayReaderBatteryIndex = 11;
 constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
 constexpr size_t kSettingsDisplayLanguageIndex = 14;
+constexpr size_t kSettingsDisplayMotionPauseIndex = 15;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -217,6 +217,11 @@ constexpr uint8_t kTypographyGuideWidthMax = kTypographyGuideWidthRange.max;
 constexpr uint8_t kTypographyGuideWidthStep = 2;
 constexpr uint8_t kTypographyGuideGapMin = kTypographyGuideGapRange.min;
 constexpr uint8_t kTypographyGuideGapMax = kTypographyGuideGapRange.max;
+
+// Motion sensor poll cadence: fast enough to catch a flick. The standby and
+// flick timing constants live in motion::StandbyDecider and
+// motion::FlickDetector; only the I2C pacing is App's.
+constexpr uint32_t kImuShortcutPollMs = 40;  // ~25 Hz
 constexpr const char *kTypographyPreviewWords[] = {
     "minimum",
     "encyclopaedia",
@@ -470,6 +475,7 @@ void App::begin() {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
+  imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -477,6 +483,7 @@ void App::begin() {
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  standbyDecider_.setIdleTimeoutMs(static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL);
   audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
   audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
   if (audioVolumePercent_ > 100) {
@@ -575,7 +582,7 @@ void App::begin() {
   applyTypographySettings(0, false);
   applyPacingSettings();
   bootStartedMs_ = millis();
-  lastInputMs_ = bootStartedMs_;
+  standbyDecider_.noteActivity(bootStartedMs_);
   lastStateLogMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
   Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
@@ -596,6 +603,7 @@ void App::begin() {
   audio_.begin();
   applyAudioSettings();
   focusTimer_.begin();
+  imuShortcutSensorReady_ = imuShortcutImu_.begin();
 
 #if RSVP_USB_TRANSFER_ENABLED && RSVP_USB_TRANSFER_AUTO_START
   state_ = AppState::Booting;
@@ -676,6 +684,10 @@ void App::update(uint32_t nowMs) {
     if (state_ != AppState::Standby) {
       return;
     }
+    updateStandbyDecision(nowMs);  // lift-to-wake
+    if (state_ != AppState::Standby) {
+      return;
+    }
     updateStandbyScreensaver(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
       lastStateLogMs_ = nowMs;
@@ -692,11 +704,11 @@ void App::update(uint32_t nowMs) {
   maybeOpenUpdateConfirm(nowMs);
   updateFocusTimer(nowMs);
   updateReader(nowMs);
+  updateStandbyDecision(nowMs);
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
-  maybeAutoStandby(nowMs);
   if (state_ == AppState::Standby) {
     return;
   }
@@ -858,6 +870,69 @@ void App::updateState(uint32_t nowMs) {
   setState(AppState::Paused, nowMs);
 }
 
+motion::StandbyContext App::standbyContext() const {
+  if (powerOffStarted_) {
+    return motion::StandbyContext::Busy;
+  }
+  switch (state_) {
+    case AppState::Playing:
+      return motion::StandbyContext::Playing;
+    case AppState::Paused:
+      return motion::StandbyContext::Paused;
+    case AppState::Menu:
+      return motion::StandbyContext::Menu;
+    default:
+      // Standby itself maps to Busy too: the decider tracks its own standby
+      // mode, and a Busy context keeps the idle timer inert until App is back
+      // on a real screen.
+      return motion::StandbyContext::Busy;
+  }
+}
+
+void App::updateStandbyDecision(uint32_t nowMs) {
+  const motion::StandbyContext context = standbyContext();
+
+  // Poll the sensor on its own cadence; between polls (or with the sensor off
+  // or absent) the decider still ticks so the idle timeout keeps running.
+  bool sampled = false;
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  if (imuShortcutsEnabled_ && imuShortcutSensorReady_ &&
+      nowMs - imuShortcutLastPollMs_ >= kImuShortcutPollMs) {
+    imuShortcutLastPollMs_ = nowMs;
+    sampled = imuShortcutImu_.readAccel(x, y, z);
+  }
+
+  motion::StandbyVerdict verdict;
+  if (sampled) {
+    const bool reading = state_ == AppState::Playing || state_ == AppState::Paused;
+    if (flickDetector_.updateWithSample(nowMs, x, y, z, reading)) {
+      Serial.println("[motion] flick -> rewind sentence");
+      noteUserInput(nowMs);  // flick navigation is activity for the idle timer
+      rewindToPreviousSentence(nowMs);
+    }
+    verdict = standbyDecider_.updateWithSample(nowMs, x, y, z, context);
+  } else {
+    verdict = standbyDecider_.update(nowMs, context);
+  }
+
+  switch (verdict.kind) {
+    case motion::StandbyVerdict::Kind::EnterStandby:
+      Serial.println(verdict.screenOff ? "[standby] set down screen-down -> screen off"
+                                       : "[standby] decider -> standby");
+      standbyScreenOffForced_ = verdict.screenOff;
+      enterStandby(nowMs);
+      break;
+    case motion::StandbyVerdict::Kind::Wake:
+      Serial.println("[motion] lift -> wake");
+      exitStandby(nowMs);
+      break;
+    case motion::StandbyVerdict::Kind::None:
+      break;
+  }
+}
+
 void App::updateReader(uint32_t nowMs) {
   if (state_ != AppState::Playing) {
     return;
@@ -920,7 +995,7 @@ bool App::handleStandbyCombo(uint32_t nowMs) {
 
   const bool bothHeld = button_.isHeld() && powerButton_.isHeld();
   if (state_ == AppState::Standby) {
-    const bool pastGrace = nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs;
+    const bool pastGrace = standbyDecider_.canWakeNow(nowMs);
     if (!bothHeld && !button_.isHeld() && !powerButton_.isHeld() && pastGrace) {
       standbyButtonsReleased_ = true;
     }
@@ -971,7 +1046,7 @@ bool App::handleStandbyCombo(uint32_t nowMs) {
 void App::handleBootButton(uint32_t nowMs) {
   if (state_ == AppState::Standby) {
     if (!standbyButtonsReleased_ && !button_.isHeld() && !powerButton_.isHeld() &&
-        nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs) {
+        standbyDecider_.canWakeNow(nowMs)) {
       standbyButtonsReleased_ = true;
     }
     if (standbyButtonsReleased_ && button_.wasPressedEvent()) {
@@ -1025,7 +1100,7 @@ void App::handlePowerButton(uint32_t nowMs) {
 
   if (state_ == AppState::Standby) {
     if (!standbyButtonsReleased_ && !button_.isHeld() && !powerButton_.isHeld() &&
-        nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs) {
+        standbyDecider_.canWakeNow(nowMs)) {
       standbyButtonsReleased_ = true;
     }
     if (standbyButtonsReleased_ && powerButton_.wasPressedEvent()) {
@@ -1163,6 +1238,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
+  imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -1170,6 +1246,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   readerProgressVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderProgressVisible, readerProgressVisibleWhilePlaying_);
   idleStandbyMinutes_ = preferences_.getUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
+  standbyDecider_.setIdleTimeoutMs(static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL);
   audioMuted_ = preferences_.getBool(kPrefAudioMuted, audioMuted_);
   audioVolumePercent_ = preferences_.getUChar(kPrefAudioVolume, audioVolumePercent_);
   if (audioVolumePercent_ > 100) {
@@ -1553,6 +1630,11 @@ bool App::handlePreviousSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs) {
     return false;
   }
 
+  rewindToPreviousSentence(nowMs);
+  return true;
+}
+
+void App::rewindToPreviousSentence(uint32_t nowMs) {
   resetReaderTapTracking();
   pausedTouch_.active = false;
   pausedTouchIntent_ = TouchIntent::None;
@@ -1568,7 +1650,6 @@ bool App::handlePreviousSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs) {
 
   Serial.printf("[app] sentence rewind index=%u word=%s\n",
                 static_cast<unsigned int>(reader_.currentIndex()), reader_.currentWord().c_str());
-  return true;
 }
 
 bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
@@ -2581,6 +2662,14 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsDisplayLanguageIndex:
         cycleUiLanguage(nowMs);
         return;
+      case kSettingsDisplayMotionPauseIndex:
+        if (imuShortcutSensorReady_) {
+          imuShortcutsEnabled_ = !imuShortcutsEnabled_;
+          preferences_.putBool(kPrefImuShortcuts, imuShortcutsEnabled_);
+        }
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -3203,6 +3292,9 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Reading percent: " +
                                  onOffLabel(readerProgressVisibleWhilePlaying_));
     settingsMenuItems_.push_back(uiText(UiText::Language) + ": " + uiLanguageLabel());
+    settingsMenuItems_.push_back(
+        String("Motion gestures: ") +
+        (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());
@@ -4379,10 +4471,12 @@ void App::enterStandby(uint32_t nowMs) {
   contextViewVisible_ = false;
   wpmFeedbackVisible_ = false;
   batteryWarningOverlayVisible_ = false;
-  standbyEnteredMs_ = nowMs;
   standbyButtonsReleased_ = false;
   standbyWakeTouchActive_ = false;
   lastStandbyFrameMs_ = 0;
+  // Anchor the wake grace; a no-op when this entry was the decider's own
+  // verdict (it already flipped its mode).
+  standbyDecider_.noteStandbyEntered(nowMs);
   setState(AppState::Standby, nowMs);
   Serial.println("[app] standby screensaver started");
 }
@@ -4392,6 +4486,10 @@ void App::exitStandby(uint32_t nowMs) {
     return;
   }
 
+  // Report the wake (a no-op after the decider's own lift verdict): counts as
+  // activity so the idle timer doesn't immediately bounce back to standby, and
+  // disarms set-down until the device leaves flat.
+  standbyDecider_.noteWoke(nowMs);
   pausedTouch_.active = false;
   pausedTouchIntent_ = TouchIntent::None;
   touchPlayHeld_ = false;
@@ -4412,6 +4510,7 @@ void App::exitStandby(uint32_t nowMs) {
     display_.wakeFromSleep();
     standbyScreenOffActive_ = false;
   }
+  standbyScreenOffForced_ = false;
   setState(nextState, nowMs);
 }
 
@@ -4426,9 +4525,9 @@ void App::handleStandbyTouchWake(uint32_t nowMs) {
   }
 
   // Ignore any touch inside the wake-grace window so the entering button combo
-  // (or a stray contact at sleep) does not instantly wake the device. The grace
-  // gate mirrors the button wake path.
-  const bool pastGrace = nowMs - standbyEnteredMs_ >= kStandbyWakeGraceMs;
+  // (or a stray contact at sleep) does not instantly wake the device. The
+  // decider owns the one grace gate every wake path consults.
+  const bool pastGrace = standbyDecider_.canWakeNow(nowMs);
   if (!pastGrace || button_.isHeld() || powerButton_.isHeld()) {
     standbyWakeTouchActive_ = false;
     return;
@@ -4450,32 +4549,16 @@ void App::handleStandbyTouchWake(uint32_t nowMs) {
     const int absDeltaY = abs(static_cast<int>(ev.y) - static_cast<int>(standbyWakeStartY_));
     standbyWakeTouchActive_ = false;
     // Decision 1: any tap (within the slop box) after the grace window wakes.
+    // (exitStandby reports the wake to the decider, which counts it as
+    // activity for the idle timer.)
     if (touchgesture::isTap(absDeltaX, absDeltaY)) {
-      noteUserInput(nowMs);  // reset the idle-standby timer on wake
       Serial.println("[app] tap wake from standby");
       exitStandby(nowMs);
     }
   }
 }
 
-void App::noteUserInput(uint32_t nowMs) { lastInputMs_ = nowMs; }
-
-void App::maybeAutoStandby(uint32_t nowMs) {
-  if (idleStandbyMinutes_ == 0) {
-    return;
-  }
-  // Only idle-in-Paused triggers auto-standby (decision 2: Playing means active
-  // reading; other states drive their own input/timeouts).
-  if (state_ != AppState::Paused) {
-    return;
-  }
-  const uint32_t idleLimitMs = static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL;
-  if (nowMs - lastInputMs_ >= idleLimitMs) {
-    Serial.printf("[app] idle %u min -> auto standby\n",
-                  static_cast<unsigned int>(idleStandbyMinutes_));
-    enterStandby(nowMs);
-  }
-}
+void App::noteUserInput(uint32_t nowMs) { standbyDecider_.noteActivity(nowMs); }
 
 void App::cycleIdleStandbyTimeout() {
   // Off -> 1 -> 2 -> 5 -> 10 -> 15 -> Off (minutes).
@@ -4500,7 +4583,8 @@ void App::cycleIdleStandbyTimeout() {
       break;
   }
   preferences_.putUChar(kPrefIdleStandbyMin, idleStandbyMinutes_);
-  lastInputMs_ = millis();
+  standbyDecider_.setIdleTimeoutMs(static_cast<uint32_t>(idleStandbyMinutes_) * 60000UL);
+  standbyDecider_.noteActivity(millis());
 }
 
 String App::idleStandbyLabel() const {
@@ -4613,12 +4697,16 @@ uint32_t App::standbyRngSeed(uint32_t nowMs) const {
 }
 
 void App::seedStandbyScreensaver(uint32_t nowMs) {
-  if (screensaverMode_ != ScreensaverMode::ScreenOff && standbyScreenOffActive_) {
+  // Screen-off either by preference or forced for this entry (set-down
+  // screen-down goes dark regardless of the screensaver choice).
+  const bool screenOff =
+      screensaverMode_ == ScreensaverMode::ScreenOff || standbyScreenOffForced_;
+  if (!screenOff && standbyScreenOffActive_) {
     display_.wakeFromSleep();
     standbyScreenOffActive_ = false;
   }
 
-  if (screensaverMode_ == ScreensaverMode::ScreenOff) {
+  if (screenOff) {
     screensaver_.reset();
     seedStandbyScreenOff(nowMs);
     return;
@@ -4660,7 +4748,7 @@ void App::updateStandbyScreensaver(uint32_t nowMs, bool force) {
     return;
   }
 
-  if (screensaverMode_ == ScreensaverMode::ScreenOff) {
+  if (screensaverMode_ == ScreensaverMode::ScreenOff || standbyScreenOffForced_) {
     if (!standbyScreenOffActive_) {
       seedStandbyScreenOff(nowMs);
     }
@@ -4761,6 +4849,8 @@ void App::wakeFromSleep() {
   wpmFeedbackVisible_ = false;
   menuScreen_ = MenuScreen::Main;
   lastStateLogMs_ = nowMs;
+  // Waking is activity: never inherit a pre-sleep idle countdown.
+  standbyDecider_.noteActivity(nowMs);
   state_ = AppState::Paused;
 
   const bool displayReady = display_.wakeFromSleep();
