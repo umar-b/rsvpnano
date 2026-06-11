@@ -39,7 +39,7 @@ enum class UiText : uint8_t {
   FontSize,
   Typeface,
   PhantomWords,
-  RedHighlight,
+  PurpleHighlight,
   Tracking,
   Anchor,
   GuideWidth,
@@ -160,8 +160,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Fuente";
         case UiText::PhantomWords:
           return "Palabras fantasma";
-        case UiText::RedHighlight:
-          return "Rojo";
+        case UiText::PurpleHighlight:
+          return "Morado";
         case UiText::Tracking:
           return "Espaciado";
         case UiText::Anchor:
@@ -276,8 +276,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Police";
         case UiText::PhantomWords:
           return "Mots fantomes";
-        case UiText::RedHighlight:
-          return "Accent rouge";
+        case UiText::PurpleHighlight:
+          return "Accent violet";
         case UiText::Tracking:
           return "Espacement";
         case UiText::Anchor:
@@ -392,8 +392,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Schriftart";
         case UiText::PhantomWords:
           return "Phantomworter";
-        case UiText::RedHighlight:
-          return "Rotfokus";
+        case UiText::PurpleHighlight:
+          return "Violettfokus";
         case UiText::Tracking:
           return "Laufweite";
         case UiText::Anchor:
@@ -508,8 +508,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Font";
         case UiText::PhantomWords:
           return "Cuvinte fantoma";
-        case UiText::RedHighlight:
-          return "Accent rosu";
+        case UiText::PurpleHighlight:
+          return "Accent violet";
         case UiText::Tracking:
           return "Spatiere";
         case UiText::Anchor:
@@ -624,8 +624,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Kroj";
         case UiText::PhantomWords:
           return "Slowa widma";
-        case UiText::RedHighlight:
-          return "Czerwony";
+        case UiText::PurpleHighlight:
+          return "Fioletowy";
         case UiText::Tracking:
           return "Odstepy";
         case UiText::Anchor:
@@ -741,8 +741,8 @@ inline const char *text(UiLanguage language, UiText key) {
           return "Typeface";
         case UiText::PhantomWords:
           return "Phantom words";
-        case UiText::RedHighlight:
-          return "Red highlight";
+        case UiText::PurpleHighlight:
+          return "Purple highlight";
         case UiText::Tracking:
           return "Tracking";
         case UiText::Anchor:

@@ -31,7 +31,8 @@ constexpr uint16_t kTrueBlack = 0x0000;
 constexpr uint16_t kPureWhite = 0xFFFF;
 constexpr uint16_t kDarkWordColor = 0xFFFF;
 constexpr uint16_t kLightWordColor = 0x0000;
-constexpr uint16_t kFocusLetterColor = 0xF800;
+// Accent purple (#A855F7 in RGB565): focus letter, selection bars, highlights.
+constexpr uint16_t kFocusLetterColor = 0xAABE;
 constexpr uint16_t kNightWordColor = 0xFCE0;
 constexpr uint16_t kNightFocusColor = 0xFA80;
 constexpr uint16_t kDarkMenuDimColor = 0x8410;

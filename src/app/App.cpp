@@ -4511,7 +4511,7 @@ String App::typographyTuningLabel() const {
     case TypographyTuningPhantomWords:
       return uiText(UiText::PhantomWords);
     case TypographyTuningFocusHighlight:
-      return uiText(UiText::RedHighlight);
+      return uiText(UiText::PurpleHighlight);
     case TypographyTuningTracking:
       return uiText(UiText::Tracking);
     case TypographyTuningAnchor:
