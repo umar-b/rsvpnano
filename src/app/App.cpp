@@ -19,7 +19,6 @@
 #include "audio/Jingle.h"
 #include "board/BoardConfig.h"
 #include "display/BurnInJitter.h"
-#include "motion/TiltScrub.h"
 #include "net/WifiConnection.h"
 #include "net/WifiCredentialStorePrefs.h"
 #include "reader/WordSplit.h"
@@ -185,9 +184,8 @@ constexpr size_t kSettingsDisplayReaderChapterIndex = 14;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 15;
 constexpr size_t kSettingsDisplayLanguageIndex = 16;
 constexpr size_t kSettingsDisplayMotionPauseIndex = 17;
-constexpr size_t kSettingsDisplayTiltScrubIndex = 18;
-constexpr size_t kSettingsDisplayDailyGoalIndex = 19;
-constexpr size_t kSettingsDisplayPauseContextIndex = 20;
+constexpr size_t kSettingsDisplayDailyGoalIndex = 18;
+constexpr size_t kSettingsDisplayPauseContextIndex = 19;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingRampInIndex = 3;
@@ -551,7 +549,6 @@ void App::begin() {
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
-  tiltScrubEnabled_ = preferences_.getBool(kPrefTiltScrub, tiltScrubEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -1023,14 +1020,12 @@ void App::updateStandbyDecision(uint32_t nowMs) {
   const motion::StandbyContext context = standbyContext();
 
   // Poll the sensor on its own cadence; between polls (or with the sensor off
-  // or absent) the decider still ticks so the idle timeout keeps running. Either
-  // motion gestures (face-down pause / flick) or tilt-to-scrub needing the
-  // stream is enough to poll.
+  // or absent) the decider still ticks so the idle timeout keeps running.
   bool sampled = false;
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
-  if ((imuShortcutsEnabled_ || tiltScrubEnabled_) && imuShortcutSensorReady_ &&
+  if (imuShortcutsEnabled_ && imuShortcutSensorReady_ &&
       nowMs - imuShortcutLastPollMs_ >= kImuShortcutPollMs) {
     imuShortcutLastPollMs_ = nowMs;
     sampled = imuShortcutImu_.readAccel(x, y, z);
@@ -1039,18 +1034,13 @@ void App::updateStandbyDecision(uint32_t nowMs) {
   motion::StandbyVerdict verdict;
   if (sampled) {
     const bool reading = state_ == AppState::Playing || state_ == AppState::Paused;
-    bool flicked = false;
     if (flickDetector_.updateWithSample(nowMs, x, y, z, reading)) {
       Serial.println("[motion] flick -> rewind sentence");
       noteUserInput(nowMs);  // flick navigation is activity for the idle timer
       rewindToPreviousSentence(nowMs);
-      flicked = true;
     }
-    updateTiltScrub(nowMs, x, y, z, flicked);
     verdict = standbyDecider_.updateWithSample(nowMs, x, y, z, context);
   } else {
-    // No sample this tick: hold the tilt gesture idle so it cannot drift.
-    updateTiltScrub(nowMs, 0.0f, 0.0f, 0.0f, true);
     verdict = standbyDecider_.update(nowMs, context);
   }
 
@@ -1067,44 +1057,6 @@ void App::updateStandbyDecision(uint32_t nowMs) {
       break;
     case motion::StandbyVerdict::Kind::None:
       break;
-  }
-}
-
-void App::updateTiltScrub(uint32_t nowMs, float x, float y, float z, bool suppressed) {
-  // Tilt-to-scrub is live only while Paused in the reader. It must never fight
-  // the other gestures: a touch in progress, a flick this tick, the focus timer
-  // or a menu (both Menu state, so the Paused gate already excludes them), or
-  // scroll-mode browsing all suppress it.
-  const bool eligible = tiltScrubEnabled_ && imuShortcutSensorReady_ &&
-                        state_ == AppState::Paused && !pausedTouch_.active &&
-                        !scrollModeEnabled() && !suppressed;
-
-  const uint32_t dtMs = nowMs - tiltScrubLastSampleMs_;
-  tiltScrubLastSampleMs_ = nowMs;
-
-  const bool wasActive = tiltScrub_.active();
-  tiltScrub_.updateWithSample(x, y, z, dtMs, eligible);
-  const bool nowActive = tiltScrub_.active();
-
-  if (nowActive && !wasActive) {
-    // Gesture engaged: anchor the scrub baseline like a touch-scrub Start.
-    invalidateContextPreviewWindow();
-    pausedTouch_.startWordIndex = reader_.currentIndex();
-    pausedTouch_.gestureStepsApplied = 0;
-    noteUserInput(nowMs);
-  }
-
-  if (nowActive) {
-    applyScrubTarget(tiltScrub_.steps(), nowMs);
-    noteUserInput(nowMs);  // active tilt counts as activity for the idle timer
-    return;
-  }
-
-  if (wasActive && !nowActive) {
-    // Rolled back to level: finish like a released scrub gesture.
-    saveReadingPosition(true);
-    tiltScrub_.reset();
-    noteUserInput(nowMs);
   }
 }
 
@@ -1431,7 +1383,6 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   imuShortcutsEnabled_ = preferences_.getBool(kPrefImuShortcuts, imuShortcutsEnabled_);
-  tiltScrubEnabled_ = preferences_.getBool(kPrefTiltScrub, tiltScrubEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
   readerChapterVisibleWhilePlaying_ =
@@ -3178,15 +3129,6 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
-      case kSettingsDisplayTiltScrubIndex:
-        if (imuShortcutSensorReady_) {
-          tiltScrubEnabled_ = !tiltScrubEnabled_;
-          preferences_.putBool(kPrefTiltScrub, tiltScrubEnabled_);
-          tiltScrub_.reset();
-        }
-        rebuildSettingsMenuItems();
-        renderSettings();
-        return;
       case kSettingsDisplayDailyGoalIndex:
         cycleDailyWordGoal(nowMs);
         rebuildSettingsMenuItems();
@@ -3983,9 +3925,6 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(
         String("Motion gestures: ") +
         (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
-    settingsMenuItems_.push_back(
-        String("Tilt to scrub: ") +
-        (imuShortcutSensorReady_ ? onOffLabel(tiltScrubEnabled_) : String("No sensor")));
     settingsMenuItems_.push_back("Daily goal: " + dailyWordGoalLabel());
     settingsMenuItems_.push_back("Sentence while paused: " + onOffLabel(pauseContextEnabled_));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
