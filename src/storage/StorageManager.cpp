@@ -256,6 +256,10 @@ void appendLibraryDirectoryEntries(const char *directoryPath, std::vector<Direct
       }
     }
     entry.close();
+    // SD enumeration runs synchronously in the loop task; with a large library
+    // it can hold the CPU for seconds. Yield each entry so the watchdog and
+    // background tasks stay fed.
+    yield();
     entry = dir.openNextFile();
   }
 
@@ -1720,6 +1724,9 @@ void StorageManager::rebuildBookMetadataCache() {
     String title;
     String author;
 
+    // One SD header read per book, back to back; yield between books so a
+    // large library cannot starve the loop task for seconds.
+    yield();
     if (hasRsvpExtension(path)) {
       const RsvpDirectiveValues values = readRsvpDirectiveValues(path);
       title = values.title;

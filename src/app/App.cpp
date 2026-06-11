@@ -5,6 +5,7 @@
 #include "library/MenuGesture.h"
 
 #include <esp_random.h>
+#include <esp_system.h>
 #include <esp_sleep.h>
 #include <esp_log.h>
 #include <SD_MMC.h>
@@ -531,6 +532,10 @@ uint16_t loadClausePauseDelayMs(Preferences &preferences, uint16_t punctuationDe
 App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
 
 void App::begin() {
+  // First thing every boot: say why we are booting. ESP_RST_PANIC, _INT_WDT,
+  // _TASK_WDT and _BROWNOUT distinguish a crash/reset loop from a normal
+  // power-on; without this line field crashes are undiagnosable.
+  Serial.printf("[boot] reset reason=%d\n", static_cast<int>(esp_reset_reason()));
   BoardConfig::begin();
   button_.begin();
   powerButton_.begin();
