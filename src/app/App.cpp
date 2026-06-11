@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "net/WifiConnection.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 
@@ -41,6 +42,9 @@ constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
 constexpr uint32_t kProgressSaveIntervalMs = 15000;
+// How often to re-snapshot the device clock reference to NVS, so a reboot
+// restores an approximate-but-valid epoch (see DeviceClock staleness semantics).
+constexpr uint32_t kClockSnapshotIntervalMs = 300000;  // 5 min
 constexpr uint32_t kUsbTransferExitHoldMs = 1200;
 constexpr size_t kTimeEstimateBlockWords = 256;
 constexpr size_t kTimeEstimateBlocksPerUpdate = 1;
@@ -157,6 +161,7 @@ constexpr size_t kSettingsDisplayReaderChapterIndex = 12;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 13;
 constexpr size_t kSettingsDisplayLanguageIndex = 14;
 constexpr size_t kSettingsDisplayMotionPauseIndex = 15;
+constexpr size_t kSettingsDisplayDailyGoalIndex = 16;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -614,6 +619,7 @@ void App::begin() {
 
   display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
   storageReady_ = storage_.begin();
+  loadDeviceClock();
   loadReadingStats();
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
@@ -973,6 +979,14 @@ void App::updateReader(uint32_t nowMs) {
 }
 
 void App::maybeSaveReadingPosition(uint32_t nowMs) {
+  // Piggyback the device-clock snapshot on the same periodic cadence so a reboot
+  // restores an approximate-but-valid epoch (independent of the Playing guard
+  // below). Cheap NVS write, gated by its own longer interval.
+  if (deviceClock_.valid() && nowMs - lastClockSnapshotMs_ >= kClockSnapshotIntervalMs) {
+    lastClockSnapshotMs_ = nowMs;
+    persistDeviceClockSnapshot();
+  }
+
   if (!usingStorageBook_ || currentBookPath_.isEmpty() || state_ != AppState::Playing) {
     return;
   }
@@ -2670,6 +2684,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayDailyGoalIndex:
+        cycleDailyWordGoal(nowMs);
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -3295,6 +3314,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(
         String("Motion gestures: ") +
         (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
+    settingsMenuItems_.push_back("Daily goal: " + dailyWordGoalLabel());
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());
@@ -3601,6 +3621,7 @@ void App::runFirmwareCheckOnly(uint32_t nowMs) {
 
   const OtaUpdater::Result result =
       otaUpdater_.checkOnly(config, &App::handleStorageStatus, this);
+  maybeSyncClockViaSntp(nowMs);
 
   Serial.printf("[ota] check-only code=%u current=%s latest=%s summary=%s\n",
                 static_cast<unsigned int>(result.code), result.currentVersion.c_str(),
@@ -3637,6 +3658,7 @@ void App::runRssFeedCheck(uint32_t nowMs) {
   display_.renderStatus("RSS", "Checking feeds", "Please wait");
   const RssFeedManager::Result result =
       rssFeedManager_.checkFeeds(preferredOtaConfig(), preferences_, &App::handleStorageStatus, this);
+  maybeSyncClockViaSntp(nowMs);
 
   Serial.printf("[rss] feeds=%u saved=%u skipped=%u summary=%s detail=%s\n",
                 static_cast<unsigned int>(result.feedsChecked),
@@ -4052,18 +4074,59 @@ uint64_t jsonUint(const String &json, const char *key) {
   }
   return value;
 }
+
+// Parse the "history" array of {dayKey, words, ms} triples written by
+// flushReadingStats and replay them into a StatsHistory. Buckets are stored in
+// ascending dayKey order, which restoreBucket relies on. Tolerant of a missing
+// array (older stats files have none) -- leaves the history empty.
+void loadStatsHistoryFromJson(const String &json, stats::StatsHistory &history) {
+  const int arrayAt = json.indexOf("\"history\":[");
+  if (arrayAt < 0) {
+    return;
+  }
+  int i = arrayAt + 11;  // past "history":[
+  const int end = json.indexOf(']', i);
+  if (end < 0) {
+    return;
+  }
+  while (i < end) {
+    const int objAt = json.indexOf('{', i);
+    if (objAt < 0 || objAt >= end) {
+      break;
+    }
+    const int objEnd = json.indexOf('}', objAt);
+    if (objEnd < 0 || objEnd > end) {
+      break;
+    }
+    const String obj = json.substring(objAt, objEnd + 1);
+    const uint32_t dayKey = static_cast<uint32_t>(jsonUint(obj, "d"));
+    const uint32_t words = static_cast<uint32_t>(jsonUint(obj, "w"));
+    const uint32_t ms = static_cast<uint32_t>(jsonUint(obj, "m"));
+    history.restoreBucket(dayKey, words, ms);
+    i = objEnd + 1;
+  }
+}
 }  // namespace
 
 void App::loadReadingStats() {
-  // Each power-on is a fresh "day" bucket: with no RTC/NTP on this device we
-  // cannot tell calendar days apart, so we bucket per session. (The pure module
-  // takes a day key, so a real date key can replace this later untouched.)
-  statsSessionDayKey_ = static_cast<uint32_t>(bootStartedMs_ ^ 0x9E3779B9UL);
-  if (statsSessionDayKey_ == 0) {
-    statsSessionDayKey_ = 1;
+  // Per-boot fallback day key for when the device clock is invalid (no RTC and
+  // no companion/SNTP time yet). currentStatsDayKey() prefers the real calendar
+  // day from deviceClock_ when valid; this keeps the per-session behaviour for
+  // the clockless case. The pure modules take a day key, so swapping in a real
+  // date key is transparent.
+  statsBootDayKey_ = static_cast<uint32_t>(bootStartedMs_ ^ 0x9E3779B9UL);
+  if (statsBootDayKey_ == 0) {
+    statsBootDayKey_ = 1;
   }
+  statsSessionDayKey_ = currentStatsDayKey(bootStartedMs_);
+
+  // Daily word goal: NVS mirror (authoritative copy also lives in the SD file).
+  dailyWordGoal_ = static_cast<uint32_t>(clampToRange(
+      static_cast<long>(preferences_.getUInt(kPrefStatsGoal, stats::kDefaultDailyGoal)),
+      kDailyGoalRange));
 
   stats::Snapshot snapshot;
+  statsHistory_ = stats::StatsHistory();
   bool loaded = false;
   if (storageReady_) {
     File file = SD_MMC.open(kStatsFile, FILE_READ);
@@ -4079,6 +4142,12 @@ void App::loadReadingStats() {
       snapshot.dayWords = jsonUint(json, "dayWords");
       snapshot.dayMs = jsonUint(json, "dayMs");
       snapshot.dayKey = static_cast<uint32_t>(jsonUint(json, "dayKey"));
+      const uint32_t fileGoal = static_cast<uint32_t>(jsonUint(json, "goalWords"));
+      if (fileGoal > 0) {
+        dailyWordGoal_ =
+            static_cast<uint32_t>(clampToRange(static_cast<long>(fileGoal), kDailyGoalRange));
+      }
+      loadStatsHistoryFromJson(json, statsHistory_);
       loaded = snapshot.totalWords > 0 || snapshot.totalMs > 0;
     } else if (file) {
       file.close();
@@ -4092,17 +4161,87 @@ void App::loadReadingStats() {
   }
 
   readingStats_ = stats::ReadingStats(snapshot);
-  Serial.printf("[stats] loaded words=%lu ms=%lu (sd=%u)\n",
+  Serial.printf("[stats] loaded words=%lu ms=%lu days=%u goal=%lu (sd=%u)\n",
                 static_cast<unsigned long>(snapshot.totalWords),
-                static_cast<unsigned long>(snapshot.totalMs), loaded ? 1 : 0);
+                static_cast<unsigned long>(snapshot.totalMs), statsHistory_.dayCount(),
+                static_cast<unsigned long>(dailyWordGoal_), loaded ? 1 : 0);
+}
+
+uint32_t App::currentStatsDayKey(uint32_t nowMs) const {
+  const uint32_t calendarDay = deviceClock_.localDayKeyNow(nowMs);
+  return calendarDay != 0 ? calendarDay : statsBootDayKey_;
+}
+
+uint32_t App::dailyWordGoal() const { return dailyWordGoal_; }
+
+void App::loadDeviceClock() {
+  const int64_t epoch = static_cast<int64_t>(preferences_.getULong64(kPrefClockEpoch, 0));
+  const int32_t tzMin = static_cast<int32_t>(
+      clampToRange(static_cast<long>(preferences_.getInt(kPrefClockTzMin, 0)),
+                   kTimezoneOffsetMinRange));
+  deviceClock_.setTimezoneOffsetMinutes(tzMin);
+  if (epoch > 0) {
+    // Approximate-but-valid: advances only by millis() since this boot. Marked
+    // stale until a fresh SNTP/companion sync. Lets day keys survive a reboot.
+    deviceClock_.restoreSnapshot(epoch, bootStartedMs_);
+  }
+  Serial.printf("[clock] restored epoch=%lld tz=%d valid=%u stale=%u\n",
+                static_cast<long long>(epoch), tzMin, deviceClock_.valid() ? 1 : 0,
+                deviceClock_.stale() ? 1 : 0);
+}
+
+void App::persistDeviceClockSnapshot() {
+  if (!deviceClock_.valid()) {
+    return;
+  }
+  // Snapshot the epoch as of *now* so the stored value already accounts for the
+  // millis() that have elapsed since the reference was set.
+  const int64_t epochNow = deviceClock_.epochNowSec(millis());
+  if (epochNow <= 0) {
+    return;
+  }
+  preferences_.putULong64(kPrefClockEpoch, static_cast<uint64_t>(epochNow));
+  preferences_.putInt(kPrefClockTzMin, deviceClock_.timezoneOffsetMinutes());
+}
+
+void App::maybeSyncClockViaSntp(uint32_t nowMs) {
+  // Called right after a home-Wi-Fi network op (RSS/OTA) returns. connectStation
+  // kicked off the SNTP daemon during the link; read the system clock now and,
+  // if it produced a real wall-clock time, adopt it as a fresh reference.
+  const int64_t epoch = net::systemEpochIfValid();
+  if (epoch <= 0) {
+    return;
+  }
+  if (deviceClock_.setReference(epoch, nowMs)) {
+    statsSessionDayKey_ = currentStatsDayKey(nowMs);
+    persistDeviceClockSnapshot();
+    Serial.printf("[clock] sntp synced epoch=%lld day=%u\n", static_cast<long long>(epoch),
+                  statsSessionDayKey_);
+  }
+}
+
+void App::applyConsumedCompanionTime(uint32_t nowMs) {
+  // The companion (browser) wrote the wall clock + tz to NVS via /api/time while
+  // App's Preferences handle was closed for sync. Re-read it on sync exit.
+  const int64_t epoch = static_cast<int64_t>(preferences_.getULong64(kPrefClockEpoch, 0));
+  const int32_t tzMin = static_cast<int32_t>(
+      clampToRange(static_cast<long>(preferences_.getInt(kPrefClockTzMin, 0)),
+                   kTimezoneOffsetMinRange));
+  deviceClock_.setTimezoneOffsetMinutes(tzMin);
+  if (epoch > 0 && deviceClock_.setReference(epoch, nowMs)) {
+    statsSessionDayKey_ = currentStatsDayKey(nowMs);
+    Serial.printf("[clock] companion time epoch=%lld tz=%d day=%u\n",
+                  static_cast<long long>(epoch), tzMin, statsSessionDayKey_);
+  }
 }
 
 void App::flushReadingStats() {
   const stats::Snapshot &snapshot = readingStats_.snapshot();
 
-  // Mirror the all-time totals to NVS for instant boot display.
+  // Mirror the all-time totals + goal to NVS for instant boot display.
   preferences_.putULong64(kPrefStatsWords, snapshot.totalWords);
   preferences_.putULong64(kPrefStatsMs, snapshot.totalMs);
+  preferences_.putUInt(kPrefStatsGoal, dailyWordGoal_);
 
   if (!storageReady_) {
     return;
@@ -4127,6 +4266,24 @@ void App::flushReadingStats() {
   file.print(static_cast<unsigned long>(snapshot.dayWords));
   file.print(",\"dayMs\":");
   file.print(static_cast<unsigned long>(snapshot.dayMs));
+  file.print(",\"goalWords\":");
+  file.print(static_cast<unsigned long>(dailyWordGoal_));
+  // 30-day history ring, ascending by dayKey (the order restoreBucket expects).
+  file.print(",\"history\":[");
+  for (uint8_t i = 0; i < statsHistory_.dayCount(); ++i) {
+    const stats::DayBucket &bucket = statsHistory_.bucketAt(i);
+    if (i != 0) {
+      file.print(",");
+    }
+    file.print("{\"d\":");
+    file.print(static_cast<unsigned long>(bucket.dayKey));
+    file.print(",\"w\":");
+    file.print(static_cast<unsigned long>(bucket.words));
+    file.print(",\"m\":");
+    file.print(static_cast<unsigned long>(bucket.ms));
+    file.print("}");
+  }
+  file.print("]");
   file.println("}");
   file.close();
 
@@ -4161,11 +4318,36 @@ void App::endStatsSession(uint32_t nowMs) {
     return;
   }
 
+  // Re-evaluate the day key at session end so a calendar rollover mid-session is
+  // attributed to the day the session finished (matches ReadingStats rollover).
+  statsSessionDayKey_ = currentStatsDayKey(nowMs);
   readingStats_.recordSession(statsSessionDayKey_, static_cast<uint32_t>(words), elapsedMs);
+  statsHistory_.recordSession(statsSessionDayKey_, static_cast<uint32_t>(words), elapsedMs);
   flushReadingStats();
   Serial.printf("[stats] session words=%u ms=%u total=%lu\n", static_cast<unsigned int>(words),
                 static_cast<unsigned int>(elapsedMs),
                 static_cast<unsigned long>(readingStats_.snapshot().totalWords));
+}
+
+void App::cycleDailyWordGoal(uint32_t nowMs) {
+  (void)nowMs;
+  // Cycle through the sensible on-device option set; snap the current value to
+  // the nearest option index first so a companion-set custom value still cycles.
+  uint8_t index = 0;
+  for (uint8_t i = 0; i < stats::kDailyGoalOptionCount; ++i) {
+    if (dailyWordGoal_ >= stats::kDailyGoalOptions[i]) {
+      index = i;
+    }
+  }
+  index = static_cast<uint8_t>((index + 1) % stats::kDailyGoalOptionCount);
+  dailyWordGoal_ = stats::kDailyGoalOptions[index];
+  preferences_.putUInt(kPrefStatsGoal, dailyWordGoal_);
+  flushReadingStats();
+  Serial.printf("[stats] daily goal -> %lu words\n", static_cast<unsigned long>(dailyWordGoal_));
+}
+
+String App::dailyWordGoalLabel() const {
+  return String(static_cast<unsigned long>(dailyWordGoal_)) + " words/day";
 }
 
 size_t App::countFinishedBooks() {
@@ -4179,18 +4361,41 @@ size_t App::countFinishedBooks() {
 }
 
 void App::openStatsScreen() {
-  const stats::Snapshot &snapshot = readingStats_.snapshot();
-  const unsigned long minutes = static_cast<unsigned long>(snapshot.totalMs / 60000ULL);
-  const unsigned long avgWpm = static_cast<unsigned long>(readingStats_.averageWpm());
-  const size_t finished = countFinishedBooks();
+  const uint32_t nowMs = millis();
+  const uint32_t todayKey = currentStatsDayKey(nowMs);
+  const bool clockValid = deviceClock_.valid();
 
-  const String line1 = String(static_cast<unsigned long>(snapshot.totalWords)) + " words  " +
-                       String(minutes) + " min";
-  const String line2 = String(avgWpm) + " wpm avg  " + String(static_cast<unsigned int>(finished)) +
-                       " finished";
-  display_.renderStatus("Reading stats", line1, line2);
-  // No RTC on this device, so totals are per-session-bucketed actuals, not
-  // calendar days. Hold the screen, then return to the menu.
+  const uint32_t todayWords = statsHistory_.wordsForDay(todayKey);
+  const uint16_t goalPermille = statsHistory_.goalProgressPermille(todayKey, dailyWordGoal_);
+
+  // Today's words vs the daily goal (the progress bar fills against this line).
+  const String goalLine = String(static_cast<unsigned long>(todayWords)) + " / " +
+                          String(static_cast<unsigned long>(dailyWordGoal_)) + " words today";
+
+  // Streak only carries calendar meaning with a valid clock; otherwise show the
+  // all-time totals on that line so the screen still says something useful.
+  String streakLine;
+  if (clockValid) {
+    const uint16_t streak = statsHistory_.currentStreak(todayKey);
+    streakLine = String(static_cast<unsigned int>(streak)) + " day streak";
+    const uint16_t best = statsHistory_.bestStreak();
+    if (best > streak) {
+      streakLine += "  (best " + String(static_cast<unsigned int>(best)) + ")";
+    }
+  } else {
+    const stats::Snapshot &snapshot = readingStats_.snapshot();
+    const unsigned long avgWpm = static_cast<unsigned long>(readingStats_.averageWpm());
+    streakLine = String(static_cast<unsigned long>(snapshot.totalWords)) + " words  " +
+                 String(avgWpm) + " wpm avg";
+  }
+
+  uint32_t spark[stats::kMaxDays] = {0};
+  const uint32_t sparkMax = statsHistory_.sparkline(clockValid ? todayKey : 0, spark,
+                                                    stats::kMaxDays);
+
+  display_.renderStatsScreen("Reading stats", goalLine, streakLine, goalPermille, spark,
+                             stats::kMaxDays, sparkMax);
+  // Hold the screen, then return to the menu.
   delay(2500);
   renderMainMenu();
 }
@@ -4304,6 +4509,9 @@ void App::exitCompanionSync(uint32_t nowMs) {
   preferences_.end();
   preferences_.begin(kPrefsNamespace, false);
   reloadRuntimePreferences(nowMs, false);
+  // The companion browser may have posted its wall clock + tz to /api/time while
+  // sync owned the NVS namespace; adopt it now that App's handle is back.
+  applyConsumedCompanionTime(nowMs);
   storage_.refreshBooks();
   menuScreen_ = MenuScreen::Main;
   setState(AppState::Paused, nowMs);

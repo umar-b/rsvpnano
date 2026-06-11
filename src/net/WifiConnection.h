@@ -21,4 +21,15 @@ bool connectStation(const String &ssid, const String &password,
 // Disconnects and powers the radio off (WIFI_OFF).
 void disconnect();
 
+// Opportunistic SNTP: while associated (any station connect for RSS/OTA), start
+// the SNTP daemon via configTime so the ESP32 system clock can be set from the
+// network at no extra connection cost. Non-blocking -- it only kicks the daemon;
+// the daemon keeps running until disconnect(). Safe to call repeatedly.
+void beginSntpSync();
+
+// Reads the ESP32 system clock if SNTP has produced a plausible wall-clock time
+// (>= 2020-01-01 UTC). Returns epoch seconds, or 0 when not yet synced. Call
+// after a network op so the in-flight SNTP daemon has had time to answer.
+int64_t systemEpochIfValid();
+
 }  // namespace net

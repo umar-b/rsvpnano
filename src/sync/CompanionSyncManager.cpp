@@ -9,6 +9,7 @@
 
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
+#include "stats/StatsHistory.h"
 
 #ifndef RSVP_FIRMWARE_VERSION
 #define RSVP_FIRMWARE_VERSION "dev"
@@ -222,7 +223,8 @@ document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.que
 $('wpm').oninput=()=>{setVal('wpm',snapWpm(val('wpm')));updateLabels()};
 ['longWordMs','complexWordMs','punctuationMs','brightnessIndex','fontSizeIndex','tracking','anchorPercent','guideWidth','guideGap'].forEach(id=>$(id).oninput=updateLabels);
 $('refreshBooksButton').onclick=refresh;$('refreshArticlesButton').onclick=refresh;$('uploadBookButton').onclick=()=>uploadPicked('bookFileInput','book');$('uploadArticleButton').onclick=()=>uploadPicked('articleFileInput','article');$('syncArticleButton').onclick=syncArticle;$('saveDraftButton').onclick=saveDraft;$('saveSettingsButton').onclick=saveSettings;$('saveWifiButton').onclick=saveWifi;$('forgetWifiButton').onclick=forgetWifi;$('saveRssButton').onclick=saveRss;$('reloadRssButton').onclick=loadRss;
-loadDraft();refresh();
+async function sendTime(){try{await api('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({epochMs:Date.now(),tzOffsetMinutes:-new Date().getTimezoneOffset()})})}catch(e){}}
+loadDraft();sendTime();refresh();
 </script>
 </body>
 </html>)HTML";
@@ -363,6 +365,32 @@ bool readJsonInt(const String &body, const char *key, int &value) {
   while (index < static_cast<int>(body.length()) &&
          isdigit(static_cast<unsigned char>(body[index]))) {
     result = result * 10 + (body[index] - '0');
+    ++index;
+  }
+  value = negative ? -result : result;
+  return true;
+}
+
+// 64-bit variant for values that overflow int (e.g. epoch milliseconds).
+bool readJsonInt64(const String &body, const char *key, int64_t &value) {
+  int colonIndex = -1;
+  if (!findJsonKey(body, key, colonIndex)) {
+    return false;
+  }
+  int index = skipJsonWhitespace(body, colonIndex + 1);
+  bool negative = false;
+  if (index < static_cast<int>(body.length()) && body[index] == '-') {
+    negative = true;
+    ++index;
+  }
+  if (index >= static_cast<int>(body.length()) ||
+      !isdigit(static_cast<unsigned char>(body[index]))) {
+    return false;
+  }
+  int64_t result = 0;
+  while (index < static_cast<int>(body.length()) &&
+         isdigit(static_cast<unsigned char>(body[index]))) {
+    result = result * 10 + static_cast<int64_t>(body[index] - '0');
     ++index;
   }
   value = negative ? -result : result;
@@ -646,6 +674,12 @@ void CompanionSyncManager::handleStatsStatic() {
   }
 }
 
+void CompanionSyncManager::handleTimeStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleTime();
+  }
+}
+
 void CompanionSyncManager::handleBooksStatic() {
   if (instance_ != nullptr) {
     instance_->handleBooks();
@@ -691,6 +725,8 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books/bookmarks", HTTP_POST, handleBookmarksStatic);
   server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
   server_.on("/api/stats", HTTP_GET, handleStatsStatic);
+  server_.on("/api/time", HTTP_POST, handleTimeStatic);
+  server_.on("/api/time", HTTP_PUT, handleTimeStatic);
   server_.on("/api/settings", HTTP_GET, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PATCH, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PUT, handleSettingsStatic);
@@ -1085,6 +1121,32 @@ void CompanionSyncManager::handleStats() {
   server_.send(200, "application/json", body);
 }
 
+void CompanionSyncManager::handleTime() {
+  // The companion browser posts its own wall clock: the device has no RTC and,
+  // in AP mode, cannot reach NTP, so the browser is the time source here. We
+  // store the epoch (seconds) + tz offset (minutes east of UTC) to NVS; App
+  // adopts it as the device-clock reference when it exits sync mode and reopens
+  // this namespace. tz is the standard UTC-12..UTC+14 span.
+  const String body = server_.arg("plain");
+  int64_t epochMs = 0;
+  if (!readJsonInt64(body, "epochMs", epochMs) || epochMs <= 0) {
+    server_.send(400, "application/json",
+                 "{\"ok\":false,\"error\":\"epochMs (browser Date.now()) required\"}");
+    return;
+  }
+  int tzOffsetMinutes = 0;
+  if (readJsonInt(body, "tzOffsetMinutes", tzOffsetMinutes)) {
+    tzOffsetMinutes = clampInt(tzOffsetMinutes, kTimezoneOffsetMinRange.min,
+                               kTimezoneOffsetMinRange.max);
+  }
+  const int64_t epochSec = epochMs / 1000;
+  preferences_.putULong64(kPrefClockEpoch, static_cast<uint64_t>(epochSec));
+  preferences_.putInt(kPrefClockTzMin, tzOffsetMinutes);
+  Serial.printf("[sync] companion time epochSec=%lld tz=%d\n", static_cast<long long>(epochSec),
+                tzOffsetMinutes);
+  server_.send(200, "application/json", "{\"ok\":true}");
+}
+
 void CompanionSyncManager::handleBookUpload() {
   HTTPUpload &upload = server_.upload();
 
@@ -1258,6 +1320,12 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"scrubStepPx\":" + String(preferences_.getUShort(kPrefGestureScrubPx, 22));
   body += ",\"playHoldMs\":" + String(preferences_.getUInt(kPrefGestureHoldMs, 420));
   body += "}";
+  body += ",\"stats\":{";
+  body += "\"dailyGoalWords\":" +
+          String(static_cast<unsigned long>(clampInt(
+              static_cast<int>(preferences_.getUInt(kPrefStatsGoal, stats::kDefaultDailyGoal)),
+              kDailyGoalRange.min, kDailyGoalRange.max)));
+  body += "}";
   body += ",\"typography\":{";
   body += "\"typeface\":\"";
   body += enumLabel(typeface, typefaceLabels, 3);
@@ -1420,6 +1488,13 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
       return false;
     }
     preferences_.putUChar(kPrefIdleStandbyMin, static_cast<uint8_t>(intValue));
+  }
+  if (readJsonInt(body, "dailyGoalWords", intValue)) {
+    if (!inRange(intValue, kDailyGoalRange)) {
+      error = "dailyGoalWords must be between 100 and 100000";
+      return false;
+    }
+    preferences_.putUInt(kPrefStatsGoal, static_cast<uint32_t>(intValue));
   }
   if (readJsonBool(body, "audioMuted", boolValue)) {
     preferences_.putBool(kPrefAudioMuted, boolValue);
