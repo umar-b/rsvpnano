@@ -20,6 +20,7 @@
 #include "input/TouchHandler.h"
 #include "motion/FlickDetector.h"
 #include "motion/StandbyDecider.h"
+#include "net/WifiCredentialStore.h"
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
@@ -147,6 +148,29 @@ class App {
     uint8_t authMode = 0;
   };
 
+  // Semantic kind of each row on the (now dynamic) Wi-Fi settings screen. The
+  // saved-network rows vary in count, so rows are dispatched by kind rather than
+  // fixed index. SavedNetwork rows carry the slot index in WifiSettingsRow.slot.
+  enum class WifiSettingsRowKind : uint8_t {
+    Back,
+    SavedNetwork,
+    AddNetwork,
+    AutoUpdate,
+    OtaOwner,
+    FirmwareVersion,
+    CheckNow,
+    LastResult,
+  };
+
+  struct WifiSettingsRow {
+    WifiSettingsRowKind kind = WifiSettingsRowKind::Back;
+    int slot = -1;  // valid only for SavedNetwork rows
+
+    WifiSettingsRow() = default;
+    WifiSettingsRow(WifiSettingsRowKind kindValue, int slotValue)
+        : kind(kindValue), slot(slotValue) {}
+  };
+
   struct TextEntryButton {
     DisplayManager::Button view;
     TextEntryAction action = TextEntryAction::Insert;
@@ -247,6 +271,18 @@ class App {
   void scanWifiNetworks();
   void renderWifiNetworks();
   void selectWifiNetworkItem(uint32_t nowMs);
+  // Multi-network saved-credential helpers (logic in net::WifiCredentialStore).
+  net::WifiCredentialStore wifiCredentialStore();
+  void migrateLegacyWifiCredential();
+  void saveWifiSlot(const String &ssid, const String &password);
+  // Resolve the wifi creds OTA/RSS should use right now. Without a scan, returns
+  // the most-recently-used saved slot. scanFirst==true does a quick scan and
+  // picks the strongest reachable saved network (net::pickConnectionOrder).
+  bool resolveHomeWifi(String &ssidOut, String &passwordOut, bool scanFirst);
+  // Saved-network detail screen (connect-test / forget).
+  void openWifiSavedNetwork(int slot);
+  void selectWifiSavedNetworkItem(uint32_t nowMs);
+  void runWifiConnectTest(int slot, uint32_t nowMs);
   void openTextEntry(TextEntryPurpose purpose, const String &title, const String &prompt,
                      const String &helperText, const String &initialValue,
                      const String &contextValue, bool masked, size_t maxLength,
@@ -518,6 +554,14 @@ class App {
   bool pacingCacheDirty_ = false;
   std::vector<DisplayManager::ContextWord> contextPreviewWords_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
+  // Wi-Fi settings screen is dynamic: this maps each visible row to its action.
+  std::vector<WifiSettingsRow> wifiSettingsRows_;
+  // Slot whose connect/forget detail screen is open.
+  int wifiSavedNetworkSlot_ = -1;
+  size_t wifiSavedNetworkSelectedIndex_ = 0;
+  // SSID of the last network we successfully associated with; marked in the
+  // saved-network list. Empty until a connect-test or a feature connect succeeds.
+  String lastConnectedWifiSsid_;
   std::vector<TextEntryButton> textEntryButtons_;
   std::unique_ptr<standby::Screensaver> screensaver_;
   String currentBookPath_;

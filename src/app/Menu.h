@@ -21,6 +21,7 @@ enum class Screen : uint8_t {
   SettingsPacing,
   WifiSettings,
   WifiNetworks,
+  WifiSavedNetwork,
   TextEntry,
   TypographyTuning,
   BookPicker,

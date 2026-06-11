@@ -70,8 +70,14 @@ constexpr const char *kPrefAudioMuted = "aud_mute";
 constexpr const char *kPrefAudioVolume = "aud_vol";
 
 // Wi-Fi + OTA.
+// Legacy single-network pair. Still read for one-time migration into slot 0 of
+// the multi-network store (net::WifiCredentialStore), then cleared. New code
+// should go through the slot keys below, not these.
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
+// Up to 5 saved home networks. Slots are addressed by net::WifiCredentialStore
+// using "wifi_ss<N>" / "wifi_pw<N>" / "wifi_rc<N>" (recency) for N in 0..4, plus
+// "wifi_rseq" as the recency sequence source. All keys are <= 15 chars.
 constexpr const char *kPrefOtaAuto = "ota_auto";
 constexpr const char *kPrefOtaOwner = "ota_owner";
 constexpr const char *kPrefOtaLastResult = "ota_res";

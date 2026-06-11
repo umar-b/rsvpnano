@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "net/WifiConnection.h"
+#include "net/WifiCredentialStorePrefs.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 
@@ -470,6 +472,9 @@ void App::begin() {
   powerButtonLongPressHandled_ = false;
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
+  // One-time fold of the legacy single home-Wi-Fi pair into slot 0 of the
+  // multi-network store; clears the legacy keys so they never shadow slots.
+  migrateLegacyWifiCredential();
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
@@ -2285,6 +2290,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     selectedIndex = &wifiNetworkSelectedIndex_;
     itemCount = wifiNetworkMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::WifiSavedNetwork) {
+    selectedIndex = &wifiSavedNetworkSelectedIndex_;
+    itemCount = 3;  // Back, Connect test, Forget
   } else if (menuScreen_ == MenuScreen::TypographyTuning) {
     selectedIndex = &typographyTuningSelectedIndex_;
     itemCount = TypographyTuningItemCount;
@@ -2406,6 +2414,10 @@ void App::selectMenuItem(uint32_t nowMs) {
   }
   if (menuScreen_ == MenuScreen::WifiNetworks) {
     selectWifiNetworkItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::WifiSavedNetwork) {
+    selectWifiSavedNetworkItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::TypographyTuning) {
@@ -2744,50 +2756,55 @@ void App::selectSettingsItem(uint32_t nowMs) {
 }
 
 void App::openWifiSettings() {
-  settingsSelectedIndex_ = configuredWifiSsid().isEmpty() ? kWifiSettingsChooseIndex
-                                                          : kWifiSettingsAutoUpdateIndex;
   menuScreen_ = MenuScreen::WifiSettings;
   rebuildSettingsMenuItems();
+  // Land on the first actionable row (a saved network, else "Add network").
+  settingsSelectedIndex_ = kSettingsBackIndex;
+  for (size_t i = 0; i < wifiSettingsRows_.size(); ++i) {
+    if (wifiSettingsRows_[i].kind == WifiSettingsRowKind::SavedNetwork ||
+        wifiSettingsRows_[i].kind == WifiSettingsRowKind::AddNetwork) {
+      settingsSelectedIndex_ = i;
+      break;
+    }
+  }
   renderSettings();
 }
 
 void App::selectWifiSettingsItem(uint32_t nowMs) {
-  switch (settingsSelectedIndex_) {
-    case kSettingsBackIndex:
+  if (settingsSelectedIndex_ >= wifiSettingsRows_.size()) {
+    return;
+  }
+  const WifiSettingsRow row = wifiSettingsRows_[settingsSelectedIndex_];
+  switch (row.kind) {
+    case WifiSettingsRowKind::Back:
       settingsSelectedIndex_ = kSettingsHomeWifiIndex;
       menuScreen_ = MenuScreen::SettingsHome;
       rebuildSettingsMenuItems();
       renderSettings();
       return;
-    case kWifiSettingsNetworkIndex:
-    case kWifiSettingsChooseIndex:
+    case WifiSettingsRowKind::SavedNetwork:
+      openWifiSavedNetwork(row.slot);
+      return;
+    case WifiSettingsRowKind::AddNetwork:
       scanWifiNetworks();
       return;
-    case kWifiSettingsAutoUpdateIndex:
+    case WifiSettingsRowKind::AutoUpdate:
       preferences_.putBool(kPrefOtaAuto, !otaAutoCheckEnabled());
       rebuildSettingsMenuItems();
       renderSettings();
       return;
-    case kWifiSettingsForgetIndex:
-      preferences_.remove(kPrefWifiSsid);
-      preferences_.remove(kPrefWifiPass);
-      display_.renderStatus("Wi-Fi", "Credentials cleared", "");
-      delay(900);
-      rebuildSettingsMenuItems();
-      renderSettings();
-      return;
-    case kWifiSettingsOtaOwnerIndex:
+    case WifiSettingsRowKind::OtaOwner:
       openTextEntry(TextEntryPurpose::OtaOwner, "OTA Source", "GitHub owner", "",
                     preferences_.getString(kPrefOtaOwner, ""), "", false, 39,
                     MenuScreen::WifiSettings);
       return;
-    case kWifiSettingsFirmwareVersionIndex:
-    case kWifiSettingsLastResultIndex:
+    case WifiSettingsRowKind::FirmwareVersion:
+    case WifiSettingsRowKind::LastResult:
       // Display-only rows; re-render so the selection highlight settles.
       rebuildSettingsMenuItems();
       renderSettings();
       return;
-    case kWifiSettingsCheckNowIndex:
+    case WifiSettingsRowKind::CheckNow:
       runFirmwareCheckOnly(nowMs);
       return;
     default:
@@ -2838,11 +2855,15 @@ void App::scanWifiNetworks() {
     return;
   }
 
-  const String savedSsid = configuredWifiSsid();
+  // Float any already-saved network to the top, then strongest RSSI.
+  net::WifiCredentialStore store = wifiCredentialStore();
+  const auto isSaved = [&store](const String &ssid) {
+    return store.findBySsid(std::string(ssid.c_str())).index >= 0;
+  };
   std::stable_sort(wifiNetworks_.begin(), wifiNetworks_.end(),
-                   [&savedSsid](const WifiNetworkInfo &left, const WifiNetworkInfo &right) {
-                     const bool leftSaved = !savedSsid.isEmpty() && left.ssid == savedSsid;
-                     const bool rightSaved = !savedSsid.isEmpty() && right.ssid == savedSsid;
+                   [&isSaved](const WifiNetworkInfo &left, const WifiNetworkInfo &right) {
+                     const bool leftSaved = isSaved(left.ssid);
+                     const bool rightSaved = isSaved(right.ssid);
                      if (leftSaved != rightSaved) {
                        return leftSaved;
                      }
@@ -2889,9 +2910,12 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
 
   const WifiNetworkInfo &network = wifiNetworks_[networkIndex];
   if (wifiNetworkRequiresPassword(network.authMode)) {
+    // Pre-fill with the saved password if this SSID is already in a slot, so
+    // re-entering an existing network does not force retyping the password.
     String initialValue;
-    if (configuredWifiSsid() == network.ssid) {
-      initialValue = preferredOtaConfig().wifiPassword;
+    net::WifiSlot existing = wifiCredentialStore().findBySsid(std::string(network.ssid.c_str()));
+    if (existing.index >= 0) {
+      initialValue = String(existing.password.c_str());
     }
     openTextEntry(TextEntryPurpose::WifiPassword, network.ssid, "Password", "",
                   initialValue, network.ssid, true, kWifiPasswordMaxLength,
@@ -2899,10 +2923,96 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
     return;
   }
 
-  preferences_.putString(kPrefWifiSsid, network.ssid);
-  preferences_.putString(kPrefWifiPass, "");
+  saveWifiSlot(network.ssid, "");
   display_.renderStatus("Wi-Fi", "Network saved", network.ssid);
   delay(900);
+  openWifiSettings();
+}
+
+void App::openWifiSavedNetwork(int slot) {
+  wifiSavedNetworkSlot_ = slot;
+  wifiSavedNetworkSelectedIndex_ = 1;  // default to Connect test
+  menuScreen_ = MenuScreen::WifiSavedNetwork;
+
+  // Resolve slot -> ssid for the row subtitle (slot index is stable).
+  String ssid;
+  for (const net::WifiSlot &s : wifiCredentialStore().list()) {
+    if (s.index == slot) {
+      ssid = String(s.ssid.c_str());
+      break;
+    }
+  }
+
+  std::vector<DisplayManager::LibraryItem> items;
+  items.push_back({uiText(UiText::Back), ""});
+  items.push_back({"Connect test", ssid});
+  items.push_back({"Forget network", ssid});
+  wifiNetworkMenuItems_ = items;  // reuse the list buffer for rendering
+  display_.renderLibrary(items, wifiSavedNetworkSelectedIndex_);
+}
+
+void App::selectWifiSavedNetworkItem(uint32_t nowMs) {
+  switch (wifiSavedNetworkSelectedIndex_) {
+    case 1:
+      runWifiConnectTest(wifiSavedNetworkSlot_, nowMs);
+      return;
+    case 2: {
+      // Forget the slot.
+      net::WifiCredentialStore store = wifiCredentialStore();
+      for (const net::WifiSlot &s : store.list()) {
+        if (s.index == wifiSavedNetworkSlot_) {
+          store.forget(s.ssid);
+          if (lastConnectedWifiSsid_ == String(s.ssid.c_str())) {
+            lastConnectedWifiSsid_ = "";
+          }
+          break;
+        }
+      }
+      display_.renderStatus("Wi-Fi", "Network forgotten", "");
+      delay(900);
+      openWifiSettings();
+      return;
+    }
+    case 0:
+    default:
+      openWifiSettings();
+      return;
+  }
+}
+
+void App::runWifiConnectTest(int slot, uint32_t nowMs) {
+  if (blockNetworkActionForOtaCheck("Wi-Fi", nowMs)) {
+    return;
+  }
+
+  String ssid;
+  String password;
+  for (const net::WifiSlot &s : wifiCredentialStore().list()) {
+    if (s.index == slot) {
+      ssid = String(s.ssid.c_str());
+      password = String(s.password.c_str());
+      break;
+    }
+  }
+  if (ssid.isEmpty()) {
+    openWifiSettings();
+    return;
+  }
+
+  display_.renderProgress("Wi-Fi", "Connecting", ssid, 5);
+  const bool connected = net::connectStation(ssid, password, [&](int percent) {
+    display_.renderProgress("Wi-Fi", "Connecting", ssid, percent);
+  });
+  net::disconnect();
+
+  if (connected) {
+    lastConnectedWifiSsid_ = ssid;
+    wifiCredentialStore().markUsed(std::string(ssid.c_str()));
+    display_.renderStatus("Wi-Fi", "Connected", ssid);
+  } else {
+    display_.renderStatus("Wi-Fi", "Connect failed", ssid);
+  }
+  delay(1200);
   openWifiSettings();
 }
 
@@ -3132,8 +3242,8 @@ void App::commitTextEntry(uint32_t nowMs) {
       }
 
       const String ssid = textEntrySession_.contextValue;
-      preferences_.putString(kPrefWifiSsid, ssid);
-      preferences_.putString(kPrefWifiPass, textEntrySession_.value);
+      const String password = textEntrySession_.value;
+      saveWifiSlot(ssid, password);
       textEntrySession_ = TextEntrySession();
       textEntryButtons_.clear();
       display_.renderStatus("Wi-Fi", "Network saved", ssid);
@@ -3308,15 +3418,42 @@ void App::rebuildSettingsMenuItems() {
                                  pacingDelayLabel(pacingPunctuationDelayMs_));
     settingsMenuItems_.push_back(uiText(UiText::ResetPacing));
   } else if (menuScreen_ == MenuScreen::WifiSettings) {
+    // Dynamic list: Back, one row per saved network, Add, then OTA controls.
+    // Each row's action is recorded in wifiSettingsRows_ so the (variable-count)
+    // saved-network rows can be dispatched by kind instead of fixed index.
+    wifiSettingsRows_.clear();
     settingsMenuItems_.push_back(uiText(UiText::Back));
-    settingsMenuItems_.push_back("Network: " + storedOrFallbackLabel(configuredWifiSsid(), "Not set"));
-    settingsMenuItems_.push_back("Choose network");
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::Back, -1});
+
+    net::WifiCredentialStore store = wifiCredentialStore();
+    const std::vector<net::WifiSlot> slots = store.list();
+    if (slots.empty()) {
+      settingsMenuItems_.push_back("No saved networks");
+      wifiSettingsRows_.push_back({WifiSettingsRowKind::FirmwareVersion, -1});
+    } else {
+      for (const net::WifiSlot &slot : slots) {
+        String label = String(slot.ssid.c_str());
+        if (!lastConnectedWifiSsid_.isEmpty() &&
+            lastConnectedWifiSsid_ == String(slot.ssid.c_str())) {
+          label += "  (connected)";
+        }
+        settingsMenuItems_.push_back(label);
+        wifiSettingsRows_.push_back({WifiSettingsRowKind::SavedNetwork, slot.index});
+      }
+    }
+
+    settingsMenuItems_.push_back("Add network");
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::AddNetwork, -1});
     settingsMenuItems_.push_back("Auto OTA: " + String(otaAutoCheckEnabled() ? "On" : "Off"));
-    settingsMenuItems_.push_back("Forget network");
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::AutoUpdate, -1});
     settingsMenuItems_.push_back("OTA Owner: " + otaOwnerLabel());
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::OtaOwner, -1});
     settingsMenuItems_.push_back("Firmware: " + otaUpdater_.currentVersion());
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::FirmwareVersion, -1});
     settingsMenuItems_.push_back("Check for updates");
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::CheckNow, -1});
     settingsMenuItems_.push_back("Last check: " + otaLastResultLabel());
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::LastResult, -1});
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
@@ -3358,16 +3495,88 @@ String App::otaOwnerLabel() {
   return cfg.githubOwner;
 }
 
+net::WifiCredentialStore App::wifiCredentialStore() {
+  // The adapter is a thin, stateless view over preferences_; build on demand.
+  static net::PreferencesKeyValueStore kv(preferences_);
+  return net::WifiCredentialStore(kv);
+}
+
+void App::migrateLegacyWifiCredential() {
+  wifiCredentialStore().migrateLegacy(kPrefWifiSsid, kPrefWifiPass);
+}
+
+void App::saveWifiSlot(const String &ssid, const String &password) {
+  wifiCredentialStore().save(std::string(ssid.c_str()), std::string(password.c_str()));
+}
+
+bool App::resolveHomeWifi(String &ssidOut, String &passwordOut, bool scanFirst) {
+  net::WifiCredentialStore store = wifiCredentialStore();
+  std::vector<net::WifiSlot> slots = store.list();
+  if (slots.empty()) {
+    // Back-compat: fall back to ota.conf's single network when nothing saved.
+    OtaUpdater::Config cfg;
+    otaUpdater_.loadConfig(cfg);
+    ssidOut = cfg.wifiSsid;
+    passwordOut = cfg.wifiPassword;
+    return !ssidOut.isEmpty();
+  }
+
+  if (scanFirst) {
+    // Quick scan, then prefer the strongest reachable saved network. Falls back
+    // to the most-recently-used slot if the scan sees none of them.
+    WiFi.persistent(false);
+    WiFi.disconnect(true, false);
+    WiFi.mode(WIFI_STA);
+    WiFi.scanDelete();
+    const int count = WiFi.scanNetworks(false, true);
+    std::vector<net::WifiScanEntry> scan;
+    for (int i = 0; i < count; ++i) {
+      const String ssid = WiFi.SSID(i);
+      if (ssid.isEmpty()) {
+        continue;
+      }
+      scan.push_back({std::string(ssid.c_str()), static_cast<int>(WiFi.RSSI(i))});
+    }
+    WiFi.scanDelete();
+    WiFi.disconnect(true, false);
+
+    const std::vector<int> order = net::pickConnectionOrder(slots, scan);
+    if (!order.empty()) {
+      for (const net::WifiSlot &slot : slots) {
+        if (slot.index == order.front()) {
+          ssidOut = String(slot.ssid.c_str());
+          passwordOut = String(slot.password.c_str());
+          return true;
+        }
+      }
+    }
+  }
+
+  // No scan (or scan saw nothing): use the most-recently-used saved slot.
+  const net::WifiSlot *best = &slots.front();
+  for (const net::WifiSlot &slot : slots) {
+    if (slot.recency > best->recency) {
+      best = &slot;
+    }
+  }
+  ssidOut = String(best->ssid.c_str());
+  passwordOut = String(best->password.c_str());
+  return !ssidOut.isEmpty();
+}
+
 OtaUpdater::Config App::preferredOtaConfig() {
   OtaUpdater::Config otaConfig;
   otaUpdater_.loadConfig(otaConfig);
 
-  if (preferences_.isKey(kPrefWifiSsid)) {
-    otaConfig.wifiSsid = preferences_.getString(kPrefWifiSsid, "");
+  // Wi-Fi creds come from the saved-network store (most-recently-used slot),
+  // with ota.conf as the back-compat fallback when no slot is set.
+  String ssid;
+  String password;
+  if (resolveHomeWifi(ssid, password, /*scanFirst=*/false) && !ssid.isEmpty()) {
+    otaConfig.wifiSsid = ssid;
+    otaConfig.wifiPassword = password;
   }
-  if (preferences_.isKey(kPrefWifiPass)) {
-    otaConfig.wifiPassword = preferences_.getString(kPrefWifiPass, "");
-  }
+
   if (preferences_.isKey(kPrefOtaAuto)) {
     otaConfig.autoCheck = preferences_.getBool(kPrefOtaAuto, otaConfig.autoCheck);
   }
@@ -3379,12 +3588,23 @@ OtaUpdater::Config App::preferredOtaConfig() {
 }
 
 String App::configuredWifiSsid() {
-  String ssid = preferences_.getString(kPrefWifiSsid, "");
-  if (ssid.isEmpty()) {
-    OtaUpdater::Config otaConfig;
-    otaUpdater_.loadConfig(otaConfig);
-    ssid = otaConfig.wifiSsid;
+  net::WifiCredentialStore store = wifiCredentialStore();
+  std::vector<net::WifiSlot> slots = store.list();
+  if (!slots.empty()) {
+    const net::WifiSlot *best = &slots.front();
+    for (const net::WifiSlot &slot : slots) {
+      if (slot.recency > best->recency) {
+        best = &slot;
+      }
+    }
+    String ssid = String(best->ssid.c_str());
+    ssid.trim();
+    return ssid;
   }
+
+  OtaUpdater::Config otaConfig;
+  otaUpdater_.loadConfig(otaConfig);
+  String ssid = otaConfig.wifiSsid;
   ssid.trim();
   return ssid;
 }
@@ -3590,7 +3810,13 @@ void App::runFirmwareCheckOnly(uint32_t nowMs) {
     return;
   }
 
-  const OtaUpdater::Config config = preferredOtaConfig();
+  OtaUpdater::Config config = preferredOtaConfig();
+  String otaSsid;
+  String otaPass;
+  if (resolveHomeWifi(otaSsid, otaPass, /*scanFirst=*/true) && !otaSsid.isEmpty()) {
+    config.wifiSsid = otaSsid;
+    config.wifiPassword = otaPass;
+  }
   if (!otaUpdater_.isConfigured(config)) {
     display_.renderStatus("OTA", "Wi-Fi not set", "Settings -> Wi-Fi");
     delay(1600);
@@ -3635,8 +3861,16 @@ void App::runRssFeedCheck(uint32_t nowMs) {
   saveReadingPosition(true);
 
   display_.renderStatus("RSS", "Checking feeds", "Please wait");
+  // Scan first and prefer the strongest reachable saved network.
+  OtaUpdater::Config rssConfig = preferredOtaConfig();
+  String bestSsid;
+  String bestPass;
+  if (resolveHomeWifi(bestSsid, bestPass, /*scanFirst=*/true) && !bestSsid.isEmpty()) {
+    rssConfig.wifiSsid = bestSsid;
+    rssConfig.wifiPassword = bestPass;
+  }
   const RssFeedManager::Result result =
-      rssFeedManager_.checkFeeds(preferredOtaConfig(), preferences_, &App::handleStorageStatus, this);
+      rssFeedManager_.checkFeeds(rssConfig, preferences_, &App::handleStorageStatus, this);
 
   Serial.printf("[rss] feeds=%u saved=%u skipped=%u summary=%s detail=%s\n",
                 static_cast<unsigned int>(result.feedsChecked),
@@ -5080,6 +5314,9 @@ void App::renderMenu() {
     renderSettings();
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     renderWifiNetworks();
+  } else if (menuScreen_ == MenuScreen::WifiSavedNetwork) {
+    // Detail rows were built in openWifiSavedNetwork() into wifiNetworkMenuItems_.
+    display_.renderLibrary(wifiNetworkMenuItems_, wifiSavedNetworkSelectedIndex_);
   } else if (menuScreen_ == MenuScreen::TextEntry) {
     renderTextEntry();
   } else if (menuScreen_ == MenuScreen::TypographyTuning) {
