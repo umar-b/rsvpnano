@@ -42,6 +42,11 @@ constexpr int kBatteryBadgeTapWidthPx = 160;
 constexpr int kBatteryBadgeTapHeightPx = 40;
 constexpr int kPreviousSentenceTapWidthPx = 96;
 constexpr int kPreviousSentenceTapHeightPx = 60;
+// Star zone: a battery-badge-sized band on the top edge, starting just past the
+// previous-sentence corner so the two never overlap.
+constexpr int kStarSentenceTapLeftPx = kPreviousSentenceTapWidthPx;  // 96
+constexpr int kStarSentenceTapWidthPx = 160;                          // matches battery badge
+constexpr int kStarSentenceTapHeightPx = 40;                          // matches battery badge
 
 }  // namespace
 
@@ -162,6 +167,12 @@ bool isBatteryBadgeTap(int x, int y, int displayWidth) {
 
 bool isPreviousSentenceTap(int x, int y) {
   return x < kPreviousSentenceTapWidthPx && y < kPreviousSentenceTapHeightPx;
+}
+
+bool isStarSentenceTap(int x, int y) {
+  return x >= kStarSentenceTapLeftPx &&
+         x < kStarSentenceTapLeftPx + kStarSentenceTapWidthPx &&
+         y <= kStarSentenceTapHeightPx;
 }
 
 }  // namespace touchgesture

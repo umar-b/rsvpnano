@@ -5,6 +5,7 @@
 #include <Preferences.h>
 #include <WebServer.h>
 
+#include "quotes/QuoteStore.h"
 #include "storage/BookProgress.h"
 
 class CompanionSyncManager {
@@ -45,6 +46,8 @@ class CompanionSyncManager {
   static void handleBookmarksStatic();
   static void handleStatsStatic();
   static void handleTimeStatic();
+  static void handleQuotesStatic();
+  static void handleQuotesMarkdownStatic();
   static void handleBooksStatic();
   static void handleBookUploadStatic();
   static void handleNotFoundStatic();
@@ -63,6 +66,8 @@ class CompanionSyncManager {
   void handleBookmarks();
   void handleStats();
   void handleTime();
+  void handleQuotes();
+  void handleQuotesMarkdown();
   bool resolveRequestedBook(const String &requested, String &filenameOut, String &pathOut,
                             String &error);
   void handleBooks();
@@ -92,6 +97,7 @@ class CompanionSyncManager {
   String networkSsid_;
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
+  QuoteStore quoteStore_;
   String statusLine1_ = "Idle";
   String statusLine2_;
   NetworkMode networkMode_ = NetworkMode::None;

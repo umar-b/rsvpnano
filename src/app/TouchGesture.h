@@ -86,5 +86,11 @@ int wpmDeltaForDrag(int deltaY);
 bool isFooterMetricTap(int x, int y, int displayWidth, int displayHeight);  // bottom-right
 bool isBatteryBadgeTap(int x, int y, int displayWidth);                     // top-right
 bool isPreviousSentenceTap(int x, int y);                                   // top-left corner
+// Star-the-sentence zone: a top-edge band the same width/height as the battery
+// badge, but shifted inboard so it sits to the RIGHT of the previous-sentence
+// corner instead of on top of it. Handedness is a full 180deg display+touch
+// rotation, so these logical coords are stable in both hands; the only top-left
+// affordance to avoid is the previous-sentence corner, which this clears.
+bool isStarSentenceTap(int x, int y);                                       // top-left band
 
 }  // namespace touchgesture

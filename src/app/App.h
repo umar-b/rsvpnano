@@ -23,6 +23,8 @@
 #include "motion/StandbyDecider.h"
 #include "motion/TiltScrub.h"
 #include "net/WifiCredentialStore.h"
+#include "quotes/Quote.h"
+#include "quotes/QuoteStore.h"
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
@@ -232,6 +234,7 @@ class App {
   bool handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs);
   bool handleBatteryBadgeTap(uint16_t x, uint16_t y, uint32_t nowMs);
   bool handlePreviousSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs);
+  bool handleStarSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs);
   void requestReaderPauseAtSentenceEnd(uint32_t nowMs);
   void finalizeReaderPause(uint32_t nowMs);
   bool shouldFinalizeReaderPause(uint32_t nowMs) const;
@@ -239,6 +242,11 @@ class App {
   bool isFooterMetricTap(uint16_t x, uint16_t y) const;
   bool isBatteryBadgeTap(uint16_t x, uint16_t y) const;
   bool isPreviousSentenceTap(uint16_t x, uint16_t y) const;
+  bool isStarSentenceTap(uint16_t x, uint16_t y) const;
+  // Star (save) the sentence containing the current word to /config/quotes.jsonl.
+  void starCurrentSentence(uint32_t nowMs);
+  void showStarOverlay(const String &line, uint32_t nowMs);
+  void updateStarOverlay(uint32_t nowMs);
   bool isActivelyReading() const;
   bool readerFooterVisible() const;
   DisplayManager::ReaderChrome readerChrome() const;
@@ -345,6 +353,11 @@ class App {
   void openBookmarkPicker();
   void selectBookmarkPickerItem(uint32_t nowMs);
   void renderBookmarkPicker();
+  // Starred sentences: on-device list of saved quotes, jump-to and remove.
+  void openStarredPicker();
+  void selectStarredPickerItem(uint32_t nowMs);
+  void renderStarredPicker();
+  bool jumpToQuote(const quotes::Quote &quote, uint32_t nowMs);
   // Reading statistics: persistence shim, Playing-session record hooks, screen.
   void loadReadingStats();
   void flushReadingStats();
@@ -542,6 +555,7 @@ class App {
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
+  QuoteStore quoteStore_;
   stats::ReadingStats readingStats_;
   stats::StatsHistory statsHistory_;
   devclock::DeviceClock deviceClock_;
@@ -562,6 +576,8 @@ class App {
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
+  uint32_t starOverlayUntilMs_ = 0;
+  bool starOverlayVisible_ = false;
   size_t lastSavedWordIndex_ = static_cast<size_t>(-1);
   size_t contextPreviewStartIndex_ = 0;
   size_t contextPreviewCurrentLocalIndex_ = static_cast<size_t>(-1);
@@ -573,6 +589,7 @@ class App {
   size_t bookPickerSelectedIndex_ = 0;
   size_t chapterPickerSelectedIndex_ = 0;
   size_t bookmarkPickerSelectedIndex_ = 0;
+  size_t starredPickerSelectedIndex_ = 0;
   size_t chapterTransitionIndex_ = static_cast<size_t>(-1);
   // Live Playing-session tracking for reading stats. Captured when entering
   // Playing, folded into readingStats_ when leaving it. -1 word index = no
@@ -637,6 +654,9 @@ class App {
   std::vector<String> chapterMenuItems_;
   std::vector<uint32_t> bookmarkMenuWordIndices_;
   std::vector<String> bookmarkMenuItems_;
+  std::vector<quotes::Quote> starredQuotes_;
+  std::vector<String> starredMenuItems_;
+  bool starredRemoveMode_ = false;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
   std::vector<uint32_t> wordBonusBlockPrefixSumMs_;

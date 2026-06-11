@@ -73,7 +73,7 @@ const char kWebCompanionHtml[] PROGMEM = R"HTML(<!doctype html>
 :root{color-scheme:dark;--bg:#0c1110;--fg:#f5f1e8;--muted:#a7aaa0;--line:#2d3430;--card:#151b18;--accent:#78d5b1;--accentInk:#07110e;--accent2:#ff9b73;--soft:#1d2924}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,#18241f 0,#0c1110 38%);color:var(--fg);font:15px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 header{position:sticky;top:0;z-index:2;background:rgba(12,17,16,.92);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);padding:14px 16px 10px}
-h1{font-size:1.15rem;margin:0 0 10px}.tabs{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+h1{font-size:1.15rem;margin:0 0 10px}.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
 button,.button{border:1px solid var(--line);border-radius:8px;background:#111714;color:var(--fg);padding:9px 11px;font:inherit}
 button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:var(--accentInk);font-weight:700}button.danger{color:var(--accent2)}
 .tabs button{white-space:nowrap;padding:8px 6px}.tabs button.active{background:var(--fg);color:var(--bg)}
@@ -92,6 +92,7 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <nav class="tabs">
 <button data-tab="books" class="active">Books</button>
 <button data-tab="articles">Articles</button>
+<button data-tab="quotes">Quotes</button>
 <button data-tab="settings">Settings</button>
 <button data-tab="rss">RSS</button>
 <button data-tab="help">Help</button>
@@ -127,6 +128,14 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 </div>
 </div>
 <div class="card"><h2>Articles</h2><div id="articlesList" class="muted">Loading...</div><p><button id="refreshArticlesButton">Refresh articles</button></p></div>
+</section>
+
+<section id="quotes" class="page">
+<div class="card"><h2>Starred Sentences</h2>
+<p class="muted">Sentences you starred on the reader, grouped by book. SD card is the source of truth.</p>
+<p><a class="button primary" href="/api/quotes.md" download="quotes.md">Download .md</a> <button id="refreshQuotesButton">Refresh</button></p>
+</div>
+<div id="quotesList" class="muted">Loading...</div>
 </section>
 
 <section id="settings" class="page">
@@ -224,10 +233,13 @@ async function forgetWifiNetwork(ssid){if(!confirm('Forget '+ssid+'?'))return;tr
 async function forgetWifi(){if(!confirm('Forget all saved Wi-Fi?'))return;try{const w=await api('/api/wifi',{method:'DELETE'});$('wifiSsid').value='';$('wifiPassword').value='';renderWifiList(w.networks);status('All Wi-Fi credentials cleared.')}catch(e){status('Forget Wi-Fi failed: '+e.message)}}
 async function loadRss(){try{const r=await api('/api/rss-feeds');$('rssFeeds').value=(r.feeds||[]).join('\n');status('RSS feeds loaded.')}catch(e){status('RSS load failed: '+e.message)}}
 async function saveRss(){const feeds=$('rssFeeds').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);try{await api('/api/rss-feeds',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({feeds})});status('RSS feeds saved.')}catch(e){status('RSS save failed: '+e.message)}}
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss()});
+function titleCase(s){return String(s||'').replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase())}
+async function loadQuotes(){try{const data=await api('/api/quotes');const quotes=data.quotes||[];if(!quotes.length){$('quotesList').innerHTML='<div class="card muted">No starred sentences yet. Star one from the reader.</div>';status('Connected to RSVP Nano.');return}const groups={};quotes.forEach(q=>{const key=q.bookPath;(groups[key]=groups[key]||{title:q.bookTitle||q.bookPath,items:[]}).items.push(q)});$('quotesList').innerHTML=Object.keys(groups).map(path=>{const g=groups[path];return `<div class="card"><h3>${html(titleCase(g.title))}</h3>${g.items.map(q=>`<div class="item"><div class="item-title">${html(q.sentence)}</div><div class="item-meta">word ${q.wordIndex}</div><p><button class="danger" data-delq="${html(encodeURIComponent(q.bookPath))}" data-delqi="${q.wordIndex}">Delete</button></p></div>`).join('')}</div>`}).join('');document.querySelectorAll('[data-delq]').forEach(b=>b.onclick=()=>delQuote(decodeURIComponent(b.dataset.delq),b.dataset.delqi));status('Connected to RSVP Nano.')}catch(e){status('Quotes load failed: '+e.message)}}
+async function delQuote(path,index){if(!confirm('Delete this starred sentence?'))return;try{await api('/api/quotes?bookPath='+encodeURIComponent(path)+'&wordIndex='+encodeURIComponent(index),{method:'DELETE'});await loadQuotes();status('Quote deleted.')}catch(e){status('Delete failed: '+e.message)}}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss();if(b.dataset.tab==='quotes')loadQuotes()});
 $('wpm').oninput=()=>{setVal('wpm',snapWpm(val('wpm')));updateLabels()};
 ['longWordMs','complexWordMs','punctuationMs','brightnessIndex','fontSizeIndex','tracking','anchorPercent','guideWidth','guideGap'].forEach(id=>$(id).oninput=updateLabels);
-$('refreshBooksButton').onclick=refresh;$('refreshArticlesButton').onclick=refresh;$('uploadBookButton').onclick=()=>uploadPicked('bookFileInput','book');$('uploadArticleButton').onclick=()=>uploadPicked('articleFileInput','article');$('syncArticleButton').onclick=syncArticle;$('saveDraftButton').onclick=saveDraft;$('saveSettingsButton').onclick=saveSettings;$('saveWifiButton').onclick=saveWifi;$('forgetWifiButton').onclick=forgetWifi;$('saveRssButton').onclick=saveRss;$('reloadRssButton').onclick=loadRss;
+$('refreshBooksButton').onclick=refresh;$('refreshArticlesButton').onclick=refresh;$('uploadBookButton').onclick=()=>uploadPicked('bookFileInput','book');$('uploadArticleButton').onclick=()=>uploadPicked('articleFileInput','article');$('syncArticleButton').onclick=syncArticle;$('saveDraftButton').onclick=saveDraft;$('saveSettingsButton').onclick=saveSettings;$('saveWifiButton').onclick=saveWifi;$('forgetWifiButton').onclick=forgetWifi;$('saveRssButton').onclick=saveRss;$('reloadRssButton').onclick=loadRss;$('refreshQuotesButton').onclick=loadQuotes;
 async function sendTime(){try{await api('/api/time',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({epochMs:Date.now(),tzOffsetMinutes:-new Date().getTimezoneOffset()})})}catch(e){}}
 loadDraft();sendTime();refresh();
 </script>
@@ -685,6 +697,18 @@ void CompanionSyncManager::handleTimeStatic() {
   }
 }
 
+void CompanionSyncManager::handleQuotesStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleQuotes();
+  }
+}
+
+void CompanionSyncManager::handleQuotesMarkdownStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleQuotesMarkdown();
+  }
+}
+
 void CompanionSyncManager::handleBooksStatic() {
   if (instance_ != nullptr) {
     instance_->handleBooks();
@@ -732,6 +756,9 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/stats", HTTP_GET, handleStatsStatic);
   server_.on("/api/time", HTTP_POST, handleTimeStatic);
   server_.on("/api/time", HTTP_PUT, handleTimeStatic);
+  server_.on("/api/quotes", HTTP_GET, handleQuotesStatic);
+  server_.on("/api/quotes", HTTP_DELETE, handleQuotesStatic);
+  server_.on("/api/quotes.md", HTTP_GET, handleQuotesMarkdownStatic);
   server_.on("/api/settings", HTTP_GET, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PATCH, handleSettingsStatic);
   server_.on("/api/settings", HTTP_PUT, handleSettingsStatic);
@@ -1160,6 +1187,75 @@ void CompanionSyncManager::handleTime() {
   Serial.printf("[sync] companion time epochSec=%lld tz=%d\n", static_cast<long long>(epochSec),
                 tzOffsetMinutes);
   server_.send(200, "application/json", "{\"ok\":true}");
+}
+
+void CompanionSyncManager::handleQuotes() {
+  if (server_.method() == HTTP_DELETE) {
+    const String path = server_.arg("bookPath");
+    const String indexArg = server_.arg("wordIndex");
+    if (path.isEmpty() || indexArg.isEmpty()) {
+      server_.send(400, "application/json",
+                   "{\"ok\":false,\"error\":\"Missing bookPath or wordIndex\"}");
+      return;
+    }
+    const uint32_t wordIndex = static_cast<uint32_t>(strtoul(indexArg.c_str(), nullptr, 10));
+    const bool removed = quoteStore_.remove(path, wordIndex);
+    if (!removed) {
+      server_.send(404, "application/json", "{\"ok\":false,\"error\":\"Quote not found\"}");
+      return;
+    }
+    statusLine1_ = "Quote removed";
+    server_.send(200, "application/json", "{\"ok\":true}");
+    return;
+  }
+
+  // GET: a flat array; the page groups by book. Pure encode lives in quotes::.
+  const std::vector<quotes::Quote> records = quoteStore_.loadAll();
+  String body = "{\"quotes\":[";
+  for (size_t i = 0; i < records.size(); ++i) {
+    if (i != 0) {
+      body += ',';
+    }
+    const quotes::Quote &q = records[i];
+    body += "{\"bookPath\":\"" + jsonEscape(q.bookPath) + "\",\"bookTitle\":\"" +
+            jsonEscape(q.bookTitle) + "\",\"wordIndex\":" +
+            String(static_cast<unsigned int>(q.wordIndex)) + ",\"sentence\":\"" +
+            jsonEscape(q.sentence) + "\"}";
+  }
+  body += "]}";
+  server_.send(200, "application/json", body);
+}
+
+void CompanionSyncManager::handleQuotesMarkdown() {
+  const std::vector<quotes::Quote> records = quoteStore_.loadAll();
+  String md = "# Starred sentences\n\n";
+
+  // Group consecutive records by book path; the on-device store already keeps a
+  // book's quotes together (append order per reader), so a running compare is
+  // enough and avoids an O(n^2) regroup.
+  String currentPath;
+  for (const quotes::Quote &q : records) {
+    if (q.bookPath != currentPath) {
+      currentPath = q.bookPath;
+      String heading = q.bookTitle;
+      heading.trim();
+      if (heading.isEmpty()) {
+        heading = displayNameForPath(q.bookPath);
+      }
+      md += "\n## " + quotes::titleCase(heading) + "\n\n";
+    }
+    // Blockquote, with internal newlines kept inside the quote block.
+    String sentence = q.sentence;
+    sentence.replace("\n", "\n> ");
+    md += "> " + sentence + "\n\n";
+  }
+
+  if (records.empty()) {
+    md += "_No starred sentences yet._\n";
+  }
+
+  server_.sendHeader("Content-Disposition", "attachment; filename=\"quotes.md\"");
+  server_.send(200, "text/markdown; charset=utf-8", md);
 }
 
 void CompanionSyncManager::handleBookUpload() {

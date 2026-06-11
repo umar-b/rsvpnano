@@ -37,6 +37,10 @@ class ReadingLoop {
   uint32_t wordPacingBonusMsAt(size_t index) const;
   uint32_t elapsedInCurrentWordMs(uint32_t nowMs) const;
   bool currentWordEndsSentence() const;
+  // Whether the word at an arbitrary index ends a sentence -- the same boundary
+  // convention rewind/star use. Public so quote extraction (App) can reuse it
+  // without duplicating the punctuation/lowercase-follow rule.
+  bool wordEndsSentenceAt(size_t wordIndex) const;
   bool atEnd() const;
 
  private:
@@ -44,7 +48,6 @@ class ReadingLoop {
   void setCurrentWordFromIndex();
   bool usingLoadedBook() const;
   bool nextWordStartsLowercaseAt(size_t wordIndex) const;
-  bool wordEndsSentenceAt(size_t wordIndex) const;
   size_t sentenceStartAtOrBefore(size_t wordIndex) const;
 
   size_t currentIndex_ = 0;
