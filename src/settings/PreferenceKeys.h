@@ -72,6 +72,9 @@ constexpr const char *kPrefStatsMs = "st_ms";
 // Daily word goal (words/day target for the streak + progress bar). Authoritative
 // alongside the SD stats file; mirrored to NVS so the screen has it on boot.
 constexpr const char *kPrefStatsGoal = "st_goal";
+// Unlocked achievements, persisted as a compact bitmask (stats::Achievement bit
+// positions). NVS-only -- no SD schema change. Key <= 15 chars.
+constexpr const char *kPrefAchievementMask = "ach_mask";
 
 // Device clock snapshot. With no RTC, App restores an approximate-but-valid epoch
 // reference on boot from these (see src/time/DeviceClock.h staleness semantics),

@@ -28,6 +28,7 @@
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
+#include "stats/Achievements.h"
 #include "stats/ReadingStats.h"
 #include "stats/StatsHistory.h"
 #include "storage/BookProgress.h"
@@ -104,6 +105,8 @@ class App {
     Percentage = 0,
     ChapterTime = 1,
     BookTime = 2,
+    // Appended; persisted in NVS, never renumber. Current WPM vs all-time avg.
+    PaceVsAverage = 3,
   };
 
   enum class BatteryLabelMode : uint8_t {
@@ -369,6 +372,22 @@ class App {
   void endStatsSession(uint32_t nowMs);
   size_t countFinishedBooks();
   void openStatsScreen();
+  // Achievements: gather the current data snapshot, fold it into achievementMask_,
+  // and -- when something new unlocked -- raise the overlay + ping. Evaluated at
+  // natural seams (stats load, session end, book finished), never per-word.
+  void loadAchievements();
+  void evaluateAchievements(uint32_t nowMs, bool allowOverlay);
+  void showAchievementOverlay(const String &name, uint32_t nowMs);
+  void updateAchievementOverlay(uint32_t nowMs);
+  // Book-finished celebration screen (LifeGrid sparkle one-shot). Begun when a
+  // book is auto-marked finished; stepped each frame; dismissed by tap/button.
+  void beginBookCelebration(uint32_t nowMs);
+  bool updateBookCelebration(uint32_t nowMs);
+  void renderBookCelebration();
+  void dismissBookCelebration(uint32_t nowMs);
+  // Boot greeting line shown over the loading screen: progress percent (+ time
+  // left when the estimate is cheaply available). No clock/estimate build forced.
+  String bootGreetingLine();
   // Day key for the current session: the local calendar day from deviceClock_
   // when valid, else the per-boot session key. Used by both ReadingStats and
   // StatsHistory so they bucket in lockstep.
@@ -575,6 +594,11 @@ class App {
   QuoteStore quoteStore_;
   stats::ReadingStats readingStats_;
   stats::StatsHistory statsHistory_;
+  // Unlocked-achievement bitmask (stats::Achievement bits), persisted to NVS.
+  // recentAchievement_ holds the most recent unlock id for the stats line and
+  // the overlay; -1 == none yet this boot.
+  uint32_t achievementMask_ = 0;
+  int recentAchievement_ = -1;
   devclock::DeviceClock deviceClock_;
   battery::Monitor batteryMonitor_;
   PausedTouchSession pausedTouch_;
@@ -595,6 +619,23 @@ class App {
   uint32_t batteryWarningRestoreAtMs_ = 0;
   uint32_t starOverlayUntilMs_ = 0;
   bool starOverlayVisible_ = false;
+  // Achievement-unlock overlay: a brief "Achievement: <name>" banner over the
+  // reader, mirroring the star/WPM overlays. One-shot, dismissed by timeout.
+  uint32_t achievementOverlayUntilMs_ = 0;
+  bool achievementOverlayVisible_ = false;
+  String achievementOverlayName_;
+  // Book-finished celebration: a one-shot LifeGrid sparkle burst over a
+  // congratulatory card, stepped for ~kBookCelebrationMs. Dismissible by any tap
+  // or button, which returns to the book picker.
+  bool bookCelebrationActive_ = false;
+  uint32_t bookCelebrationUntilMs_ = 0;
+  uint32_t bookCelebrationLastFrameMs_ = 0;
+  uint32_t bookCelebrationGeneration_ = 0;
+  String bookCelebrationTitle_;
+  size_t bookCelebrationNumber_ = 0;
+  uint32_t bookCelebrationAvgWpm_ = 0;
+  std::vector<uint32_t> bookCelebrationCells_;
+  std::vector<uint32_t> bookCelebrationNext_;
   size_t lastSavedWordIndex_ = static_cast<size_t>(-1);
   size_t contextPreviewStartIndex_ = 0;
   size_t contextPreviewCurrentLocalIndex_ = static_cast<size_t>(-1);
@@ -614,6 +655,10 @@ class App {
   uint32_t statsPlayStartMs_ = 0;
   size_t statsPlayStartWordIndex_ = static_cast<size_t>(-1);
   uint32_t statsSessionDayKey_ = 0;
+  // The most recently completed Playing session, captured for the SpeedReader
+  // achievement predicate (a sustained fast read). 0/0 outside a session.
+  uint32_t lastSessionWords_ = 0;
+  uint32_t lastSessionAvgWpm_ = 0;
   // Reading sprint: words read while a focus-timer work block runs in the
   // background. The overlay shows the result briefly when the block completes.
   sprint::SprintAccount sprint_;

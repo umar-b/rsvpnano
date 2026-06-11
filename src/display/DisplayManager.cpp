@@ -3124,6 +3124,75 @@ void DisplayManager::renderLifeScreensaver(const std::vector<uint32_t> &cells, u
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+void DisplayManager::renderBookCelebration(const std::vector<uint32_t> &cells, uint16_t columns,
+                                           uint16_t rows, uint32_t generation,
+                                           const String &headline, const String &title,
+                                           const String &detailLine) {
+  const String renderKey = "celebrate|" + String(generation) + "|" + headline + "|" + title + "|" +
+                           detailLine + "|d:" + String(darkMode_ ? 1 : 0) + "|n:" +
+                           String(nightMode_ ? 1 : 0);
+  if (!initialized_ || renderKey == lastRenderKey_ || columns == 0 || rows == 0) {
+    return;
+  }
+  lastRenderKey_ = renderKey;
+
+  const int scale = 1;
+  const int virtualWidth = logicalWidth();
+  const int virtualHeight = logicalHeight();
+  const int cellSize =
+      std::max(1, std::min(virtualWidth / static_cast<int>(columns),
+                           virtualHeight / static_cast<int>(rows)));
+  const int renderWidth = std::min(virtualWidth, static_cast<int>(columns) * cellSize);
+  const int renderHeight = std::min(virtualHeight, static_cast<int>(rows) * cellSize);
+  const int xOffset = std::max(0, (virtualWidth - renderWidth) / 2);
+  const int yOffset = std::max(0, (virtualHeight - renderHeight) / 2);
+  // Dim the sparkle so the card text stays legible on top of it.
+  const uint16_t sparkleColor = panelColor(blendOverBackground(wordColor(), nightMode_ ? 96 : 120));
+
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+  for (int y = 0; y < static_cast<int>(rows); ++y) {
+    const int dstY = yOffset + y * cellSize;
+    if (dstY >= yOffset + renderHeight) {
+      break;
+    }
+    for (int x = 0; x < static_cast<int>(columns); ++x) {
+      const int dstX = xOffset + x * cellSize;
+      if (dstX >= xOffset + renderWidth) {
+        break;
+      }
+      const size_t index = static_cast<size_t>(y) * columns + static_cast<size_t>(x);
+      if (!packedLifeCellAlive(cells, index)) {
+        continue;
+      }
+      const int blockWidth = std::min(cellSize, xOffset + renderWidth - dstX);
+      const int blockHeight = std::min(cellSize, yOffset + renderHeight - dstY);
+      for (int blockY = 0; blockY < blockHeight; ++blockY) {
+        uint16_t *row = virtualFrame_ + (dstY + blockY) * kVirtualBufferWidth + dstX;
+        std::fill_n(row, blockWidth, sparkleColor);
+      }
+    }
+  }
+
+  // Congratulatory card text, centred, layered over the sparkle.
+  const int glyphHeight = baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(headline));
+  const int headlineY = std::max(0, (virtualHeight - glyphHeight) / 2 - 26);
+  const int titleY = std::min(virtualHeight - kTinyGlyphHeight * kTinyScale,
+                              headlineY + glyphHeight + 22);
+  const int detailY = std::min(virtualHeight - kTinyGlyphHeight * kTinyScale,
+                               titleY + kTinyGlyphHeight * kTinyScale + 10);
+  if (!headline.isEmpty()) {
+    drawWordLine(headline, headlineY, wordColor());
+  }
+  if (!title.isEmpty()) {
+    drawTinyTextCentered(title, titleY, focusColor(), kTinyScale);
+  }
+  if (!detailLine.isEmpty()) {
+    drawTinyTextCentered(detailLine, detailY, dimColor(), kTinyScale);
+  }
+
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
 void DisplayManager::renderScreensaverText(const std::vector<ScreensaverTextSprite> &sprites,
                                            uint16_t columns, uint16_t rows, uint32_t generation) {
   if (!initialized_ || columns == 0 || rows == 0) {

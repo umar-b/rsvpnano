@@ -132,6 +132,13 @@ class DisplayManager {
   void renderLifeScreensaver(const std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
                              uint32_t generation,
                              const std::vector<uint32_t> *dimCells = nullptr);
+  // One-shot book-finished celebration: a dim LifeGrid sparkle backdrop with a
+  // congratulatory card (title + "Book #N finished" + an optional WPM line) drawn
+  // on top, composed in a single frame. `generation` advances per animation step
+  // so the change-detect redraws each frame.
+  void renderBookCelebration(const std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
+                             uint32_t generation, const String &headline, const String &title,
+                             const String &detailLine);
   // A text-overlay screensaver (word-rain, DVD-bounce). Each sprite carries a
   // grid-cell position, a dim level (0 = brightest), and a one-frame "bright"
   // request. Grid space is columns x rows, the same as the cell savers.

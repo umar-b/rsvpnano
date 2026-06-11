@@ -26,6 +26,7 @@
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 #include "standby/BookCoverDrift.h"
+#include "standby/LifeGrid.h"
 #include "text/PreviewSamples.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
@@ -41,6 +42,11 @@ constexpr uint32_t kOtaCheckTaskStackBytes = 10240;
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
 constexpr uint32_t kStarOverlayMs = 800;
+constexpr uint32_t kAchievementOverlayMs = 1500;
+// Book-finished celebration: a one-shot LifeGrid sparkle held for ~2 s (a tap or
+// button ends it sooner). Frame cadence matches the standby savers.
+constexpr uint32_t kBookCelebrationMs = 2000;
+constexpr uint32_t kBookCelebrationFrameMs = 90;
 constexpr uint32_t kPowerOffHoldMs = 1600;
 constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
 constexpr uint32_t kReaderDoubleTapWindowMs = 520;
@@ -580,6 +586,9 @@ void App::begin() {
     case static_cast<uint8_t>(FooterMetricMode::BookTime):
       footerMetricMode_ = FooterMetricMode::BookTime;
       break;
+    case static_cast<uint8_t>(FooterMetricMode::PaceVsAverage):
+      footerMetricMode_ = FooterMetricMode::PaceVsAverage;
+      break;
     case static_cast<uint8_t>(FooterMetricMode::Percentage):
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
@@ -700,6 +709,7 @@ void App::begin() {
   storageReady_ = storage_.begin();
   loadDeviceClock();
   loadReadingStats();
+  loadAchievements();
   const uint16_t savedWpm = preferences_.getUShort(kPrefWpm, reader_.wpm());
   reader_.setWpm(savedWpm);
 
@@ -783,6 +793,26 @@ void App::update(uint32_t nowMs) {
     return;
   }
 
+  // Book-finished celebration takes over the screen while active. A tap or any
+  // button press ends it immediately (handled below); otherwise it self-expires.
+  if (bookCelebrationActive_) {
+    bool dismiss = button_.wasPressedEvent() || powerButton_.wasPressedEvent();
+    if (!dismiss && touchInitialized_) {
+      TouchEvent event;
+      if (touch_.poll(event) && event.touched && event.phase == TouchPhase::Start) {
+        dismiss = true;
+      }
+    }
+    if (dismiss) {
+      dismissBookCelebration(nowMs);
+    } else {
+      updateBookCelebration(nowMs);
+    }
+    if (bookCelebrationActive_) {
+      return;
+    }
+  }
+
   pollOtaCheckResult(nowMs);
   updateState(nowMs);
   loadPendingBootBook(nowMs);
@@ -792,6 +822,9 @@ void App::update(uint32_t nowMs) {
   if (updateSprintOverlay(nowMs)) {
     // The "Block done" overlay is up; hold it and skip reader rendering so it
     // isn't immediately overwritten. Touch/standby still run below.
+  } else if (achievementOverlayVisible_) {
+    // The achievement banner is up; hold it the same way (rendered below by
+    // updateAchievementOverlay) so the reader doesn't draw over it.
   } else {
     updateReader(nowMs);
   }
@@ -799,6 +832,7 @@ void App::update(uint32_t nowMs) {
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
   updateStarOverlay(nowMs);
+  updateAchievementOverlay(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
   if (state_ == AppState::Standby) {
@@ -806,7 +840,7 @@ void App::update(uint32_t nowMs) {
   }
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
-    if (!sprintOverlayVisible_) {
+    if (!sprintOverlayVisible_ && !achievementOverlayVisible_) {
       renderActiveReader(nowMs);
     }
   } else if (batteryChanged && state_ == AppState::Menu) {
@@ -1433,6 +1467,9 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
     case static_cast<uint8_t>(FooterMetricMode::BookTime):
       footerMetricMode_ = FooterMetricMode::BookTime;
       break;
+    case static_cast<uint8_t>(FooterMetricMode::PaceVsAverage):
+      footerMetricMode_ = FooterMetricMode::PaceVsAverage;
+      break;
     case static_cast<uint8_t>(FooterMetricMode::Percentage):
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
@@ -1917,6 +1954,9 @@ bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
       footerMetricMode_ = FooterMetricMode::BookTime;
       break;
     case FooterMetricMode::BookTime:
+      footerMetricMode_ = FooterMetricMode::PaceVsAverage;
+      break;
+    case FooterMetricMode::PaceVsAverage:
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
       break;
@@ -1932,6 +1972,9 @@ bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
       break;
     case FooterMetricMode::BookTime:
       modeName = "book";
+      break;
+    case FooterMetricMode::PaceVsAverage:
+      modeName = "pace";
       break;
     case FooterMetricMode::Percentage:
     default:
@@ -5459,6 +5502,16 @@ void App::endStatsSession(uint32_t nowMs) {
   Serial.printf("[stats] session words=%u ms=%u total=%lu\n", static_cast<unsigned int>(words),
                 static_cast<unsigned int>(elapsedMs),
                 static_cast<unsigned long>(readingStats_.snapshot().totalWords));
+
+  // The session that just ended feeds the "sustained 600 WPM" predicate; the
+  // word/lifetime/streak predicates read the now-updated stores. Overlay only
+  // when paused/playing on a reader screen (evaluateAchievements gates the seam).
+  lastSessionWords_ = static_cast<uint32_t>(words);
+  lastSessionAvgWpm_ =
+      elapsedMs >= 1000
+          ? static_cast<uint32_t>((static_cast<uint64_t>(words) * 60000ULL) / elapsedMs)
+          : 0;
+  evaluateAchievements(nowMs, true);
 }
 
 void App::cycleDailyWordGoal(uint32_t nowMs) {
@@ -5521,6 +5574,27 @@ void App::openStatsScreen() {
                  String(avgWpm) + " wpm avg";
   }
 
+  // Achievements summary on the goal line's sibling: unlocked count, and the
+  // most recent unlock's name when there is one. Kept short for the tiny font.
+  const uint8_t unlockedCount = stats::unlockedCount(achievementMask_);
+  String achievementsLine = String(static_cast<unsigned int>(unlockedCount)) + "/" +
+                            String(static_cast<unsigned int>(stats::kAchievementCount)) +
+                            " achievements";
+  if (recentAchievement_ >= 0 && recentAchievement_ < stats::kAchievementCount) {
+    const char *name =
+        stats::achievementName(static_cast<stats::Achievement>(recentAchievement_));
+    if (name != nullptr && name[0] != '\0') {
+      achievementsLine += String(": ") + name;
+    }
+  }
+  // Fold onto the streak line (the focus-coloured line) so the screen layout and
+  // the fixed renderStatsScreen signature stay unchanged.
+  if (!streakLine.isEmpty()) {
+    streakLine += "   " + achievementsLine;
+  } else {
+    streakLine = achievementsLine;
+  }
+
   uint32_t spark[stats::kMaxDays] = {0};
   const uint32_t sparkMax = statsHistory_.sparkline(clockValid ? todayKey : 0, spark,
                                                     stats::kMaxDays);
@@ -5530,6 +5604,186 @@ void App::openStatsScreen() {
   // Hold the screen, then return to the menu.
   delay(2500);
   renderMainMenu();
+}
+
+void App::loadAchievements() {
+  achievementMask_ =
+      preferences_.getUInt(kPrefAchievementMask, 0) & stats::kAllAchievementsMask;
+  recentAchievement_ = -1;
+  // Boot-time reconciliation: data already on disk (finished books, lifetime
+  // words, a valid streak) may qualify for achievements the mask doesn't yet
+  // hold (e.g. first run after this feature ships). Fold silently -- no overlay
+  // or ping for things earned before the device could record them.
+  evaluateAchievements(millis(), false);
+  // Those weren't unlocked *this* session, so don't surface them as the "most
+  // recent" unlock on the stats screen until something unlocks live.
+  recentAchievement_ = -1;
+  Serial.printf("[ach] loaded mask=0x%lx unlocked=%u\n",
+                static_cast<unsigned long>(achievementMask_),
+                stats::unlockedCount(achievementMask_));
+}
+
+void App::evaluateAchievements(uint32_t nowMs, bool allowOverlay) {
+  stats::AchievementInputs inputs;
+  inputs.lifetimeWords = readingStats_.snapshot().totalWords;
+  inputs.finishedBooks = static_cast<uint32_t>(countFinishedBooks());
+  inputs.clockValid = deviceClock_.valid();
+  inputs.currentStreak =
+      inputs.clockValid ? statsHistory_.currentStreak(currentStatsDayKey(nowMs)) : 0;
+  inputs.lastSessionWords = lastSessionWords_;
+  inputs.lastSessionAvgWpm = lastSessionAvgWpm_;
+
+  const uint32_t before = achievementMask_;
+  const uint32_t newly = stats::applyUnlocks(achievementMask_, inputs);
+  if (achievementMask_ == before) {
+    return;
+  }
+
+  preferences_.putUInt(kPrefAchievementMask, achievementMask_);
+
+  // Surface the highest-numbered freshly unlocked achievement (the "biggest"
+  // milestone this evaluation crossed) as the most recent unlock.
+  int highest = -1;
+  for (uint8_t i = 0; i < stats::kAchievementCount; ++i) {
+    if (newly & (1UL << i)) {
+      highest = i;
+    }
+  }
+  if (highest < 0) {
+    return;
+  }
+  recentAchievement_ = highest;
+  const char *name = stats::achievementName(static_cast<stats::Achievement>(highest));
+  Serial.printf("[ach] unlocked %s (mask=0x%lx)\n", name ? name : "?",
+                static_cast<unsigned long>(achievementMask_));
+
+  if (allowOverlay) {
+    showAchievementOverlay(String(name ? name : ""), nowMs);
+  }
+}
+
+void App::showAchievementOverlay(const String &name, uint32_t nowMs) {
+  // Arm a brief "Achievement: <name>" banner. Rendering is held by
+  // updateAchievementOverlay so a concurrent state-change render (e.g. the
+  // Playing->Paused transition that ends the session) can't immediately clobber
+  // it -- mirroring the reading-sprint "Block done" overlay hold pattern.
+  achievementOverlayName_ = name;
+  achievementOverlayVisible_ = true;
+  achievementOverlayUntilMs_ = nowMs + kAchievementOverlayMs;
+  applyReaderUiOrientation();
+  // Reuse the chime gate + mute handling already inside AudioManager.
+  if (soundChimeEnabled_) {
+    audio_.playJingle(jingle::achievementPing());
+  }
+}
+
+void App::updateAchievementOverlay(uint32_t nowMs) {
+  if (!achievementOverlayVisible_) {
+    return;
+  }
+  // Only hold the overlay on a reader screen; anywhere else it expires silently.
+  if (state_ != AppState::Paused && state_ != AppState::Playing) {
+    achievementOverlayVisible_ = false;
+    return;
+  }
+  if (nowMs >= achievementOverlayUntilMs_) {
+    achievementOverlayVisible_ = false;
+    renderActiveReader(nowMs);
+    return;
+  }
+  display_.renderStatus("Achievement", achievementOverlayName_, currentBookTitle_);
+}
+
+void App::beginBookCelebration(uint32_t nowMs) {
+  // The celebration owns the screen; drop any pending achievement overlay so it
+  // doesn't redraw over the book picker after dismissal (the unlock already
+  // recorded + pinged at the session-end seam).
+  achievementOverlayVisible_ = false;
+  bookCelebrationActive_ = true;
+  bookCelebrationUntilMs_ = nowMs + kBookCelebrationMs;
+  bookCelebrationLastFrameMs_ = 0;
+  bookCelebrationGeneration_ = 0;
+  bookCelebrationTitle_ = currentBookTitle_;
+  bookCelebrationNumber_ = countFinishedBooks();
+  bookCelebrationAvgWpm_ = readingStats_.averageWpm();
+
+  // Seed a sparse random LifeGrid burst -- a one-shot saver, not the ambient
+  // standby loop. ~18% fill makes a lively but short-lived sparkle.
+  const size_t cellCount =
+      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
+  bookCelebrationCells_.assign(standby::packedWordCount(cellCount), 0);
+  uint32_t rng = standbyRngSeed(nowMs) ^ 0xBEEFCafeUL;
+  for (size_t i = 0; i < cellCount; ++i) {
+    if ((standby::advanceRng(rng) >> 8) % 100U < 18U) {
+      standby::setCell(bookCelebrationCells_, i, true);
+    }
+  }
+  renderBookCelebration();
+  Serial.printf("[celebrate] book #%u finished title=%s avgWpm=%lu\n",
+                static_cast<unsigned int>(bookCelebrationNumber_), bookCelebrationTitle_.c_str(),
+                static_cast<unsigned long>(bookCelebrationAvgWpm_));
+}
+
+bool App::updateBookCelebration(uint32_t nowMs) {
+  if (!bookCelebrationActive_) {
+    return false;
+  }
+  if (nowMs >= bookCelebrationUntilMs_) {
+    dismissBookCelebration(nowMs);
+    return false;
+  }
+  if (nowMs - bookCelebrationLastFrameMs_ < kBookCelebrationFrameMs) {
+    return true;
+  }
+  bookCelebrationLastFrameMs_ = nowMs;
+  standby::lifeStep(bookCelebrationCells_, bookCelebrationNext_, kStandbyLifeColumns,
+                    kStandbyLifeRows);
+  bookCelebrationCells_.swap(bookCelebrationNext_);
+  ++bookCelebrationGeneration_;
+  renderBookCelebration();
+  return true;
+}
+
+void App::renderBookCelebration() {
+  const String title =
+      bookCelebrationTitle_.isEmpty() ? String("Book finished") : bookCelebrationTitle_;
+  const String headline =
+      String("Book #") + String(static_cast<unsigned long>(bookCelebrationNumber_)) + " finished";
+  String wpmLine;
+  if (bookCelebrationAvgWpm_ > 0) {
+    wpmLine = String(static_cast<unsigned long>(bookCelebrationAvgWpm_)) + " WPM avg (all time)";
+  }
+  // Sparkle backdrop + congratulatory card composed in one frame.
+  display_.renderBookCelebration(bookCelebrationCells_, kStandbyLifeColumns, kStandbyLifeRows,
+                                 bookCelebrationGeneration_, headline, title, wpmLine);
+}
+
+void App::dismissBookCelebration(uint32_t nowMs) {
+  if (!bookCelebrationActive_) {
+    return;
+  }
+  bookCelebrationActive_ = false;
+  std::vector<uint32_t>().swap(bookCelebrationCells_);
+  std::vector<uint32_t>().swap(bookCelebrationNext_);
+  // Return to the book picker so the reader can pick what to read next.
+  Serial.println("[celebrate] dismissed -> book picker");
+  openBookPicker(false);
+}
+
+String App::bootGreetingLine() {
+  // Progress percent from the saved position (cheap: read straight off the
+  // BookProgress store, no word stream scan). Append a time-left estimate only
+  // when the estimate cache already exists for this book (never built at boot).
+  const String title = currentBookTitle_.isEmpty() ? String("your book") : currentBookTitle_;
+  uint8_t percent = 0;
+  const bool hasPercent = bookProgressPercent(pendingBootBookIndex_, percent);
+  String line = "Welcome back";
+  if (hasPercent) {
+    line += " - " + String(static_cast<unsigned int>(percent)) + "% through " + title;
+  } else {
+    line += " - " + title;
+  }
+  return line;
 }
 
 void App::openRestartConfirm() {
@@ -6399,7 +6653,10 @@ void App::loadPendingBootBook(uint32_t nowMs) {
   }
 
   pendingBootBookLoad_ = false;
-  display_.renderStatus("Loading book", currentBookTitle_, "Please wait");
+  // Boot greeting: one line over the loading screen with the saved progress
+  // percent (and title). The percent comes straight off BookProgress -- cheap --
+  // so this never blocks the load to build a reading-time estimate.
+  display_.renderStatus("Loading book", bootGreetingLine(), "Please wait");
   const uint32_t startedMs = millis();
   const bool allowIndexBuild = pendingBootBookLegacyFallback_;
   const bool loaded = loadBookAtIndex(pendingBootBookIndex_, nowMs,
@@ -6449,6 +6706,11 @@ void App::saveReadingPosition(bool force) {
     if (soundChimeEnabled_) {
       audio_.playJingle(jingle::bookFanfare());
     }
+    // A finished book is a natural achievement seam (book-count milestones). Then
+    // raise the celebration screen; suppress the achievement overlay here so it
+    // doesn't fight the celebration -- the unlock still records + pings.
+    evaluateAchievements(millis(), false);
+    beginBookCelebration(millis());
   }
   lastSavedWordIndex_ = wordIndex;
   Serial.printf("[app] saved position word=%u book=%s\n", static_cast<unsigned int>(wordIndex),
@@ -6924,6 +7186,20 @@ String App::currentFooterMetricLabel() const {
     return String(readingProgressPercent()) + "%";
   }
 
+  if (footerMetricMode_ == FooterMetricMode::PaceVsAverage) {
+    // Current set WPM vs all-time average. The device font has no arrow glyphs
+    // (they fall back to '?'), so use ASCII '+'/'-' to mark faster/slower. When
+    // there's no average yet (too little recorded), just show the current WPM.
+    const uint32_t current = reader_.wpm();
+    const uint32_t average = readingStats_.averageWpm();
+    if (average == 0) {
+      return String(static_cast<unsigned long>(current)) + " WPM";
+    }
+    const char marker = current >= average ? '+' : '-';
+    return String(static_cast<unsigned long>(current)) + " WPM " + String(marker) +
+           " vs " + String(static_cast<unsigned long>(average));
+  }
+
   const size_t wordCount = reader_.wordCount();
   if (wordCount == 0) {
     return "0%";
@@ -6980,6 +7256,8 @@ String App::footerMetricModeLabel() const {
       return "Chapter time";
     case FooterMetricMode::BookTime:
       return "Book time";
+    case FooterMetricMode::PaceVsAverage:
+      return "Pace vs average";
     case FooterMetricMode::Percentage:
     default:
       return "Percent read";
