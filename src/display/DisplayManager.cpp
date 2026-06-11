@@ -1654,6 +1654,15 @@ void DisplayManager::applyBrightness() {
 
 void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHeight) {
   tickerPlaybackFrameActive_ = false;
+  // Burn-in jitter: shift the whole frame by the pending reader offset, then
+  // consume it so non-reader screens are never moved. A screen pixel at
+  // logicalX maps to source (logicalX - offset); vacated edges fall back to the
+  // background colour so the +/-1 px slide stays invisible.
+  const int offsetX = readerOffsetX_;
+  const int offsetY = readerOffsetY_;
+  readerOffsetX_ = 0;
+  readerOffsetY_ = 0;
+  const uint16_t background = panelColor(backgroundColor());
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
        nativeYStart += kMaxChunkPhysicalRows) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
@@ -1667,11 +1676,13 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
         int logicalX = 0;
         int logicalY = 0;
         mapPhysicalToLogical(uiOrientation_, nativeX, nativeY, logicalX, logicalY);
-        const int sourceX = logicalX / scale;
-        const int sourceY = logicalY / scale;
+        const int sourceX = (logicalX - offsetX) / scale;
+        const int sourceY = (logicalY - offsetY) / scale;
 
         if (sourceX >= 0 && sourceX < virtualWidth && sourceY >= 0 && sourceY < virtualHeight) {
           dstRow[nativeX] = virtualFrame_[sourceY * kVirtualBufferWidth + sourceX];
+        } else if (offsetX != 0 || offsetY != 0) {
+          dstRow[nativeX] = background;
         }
       }
     }
@@ -1680,6 +1691,18 @@ void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHe
       return;
     }
   }
+}
+
+void DisplayManager::setReaderRenderOffset(int dx, int dy) {
+  // The frame-dedupe cache (lastRenderKey_) keys on content, not position, so a
+  // jitter step on otherwise-identical content would be short-circuited and the
+  // shift never reach the flush. Invalidate the cache when the offset changes so
+  // the pending reader render actually redraws and applies it.
+  if (dx != readerOffsetX_ || dy != readerOffsetY_) {
+    lastRenderKey_ = "";
+  }
+  readerOffsetX_ = dx;
+  readerOffsetY_ = dy;
 }
 
 void DisplayManager::flushFullWidthLogicalBand(int yStart, int yEnd) {

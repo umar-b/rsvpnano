@@ -72,6 +72,10 @@ class DisplayManager {
   void setUiRotated180(bool rotated180);
   void setTypographyConfig(const TypographyConfig &config);
   TypographyConfig typographyConfig() const;
+  // AMOLED burn-in jitter: shifts the whole reader frame by (dx, dy) px at the
+  // flush choke point. Set just before a reader render; consumed by the next
+  // flush so non-reader screens (menus, status) stay put. See display::BurnInJitter.
+  void setReaderRenderOffset(int dx, int dy);
   bool darkMode() const;
   bool nightMode() const;
   void prepareForSleep();
@@ -204,6 +208,9 @@ class DisplayManager {
       BoardConfig::UI_ROTATED_180 ? BoardConfig::UiOrientation::LandscapeFlipped
                                   : BoardConfig::UiOrientation::Landscape;
   bool tickerPlaybackFrameActive_ = false;
+  // Pending reader-frame jitter, applied and consumed by the next flush.
+  int readerOffsetX_ = 0;
+  int readerOffsetY_ = 0;
   String lastRenderKey_;
   String batteryLabel_;
 };

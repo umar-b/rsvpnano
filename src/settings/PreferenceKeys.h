@@ -59,6 +59,10 @@ constexpr const char *kPrefStatsMs = "st_ms";
 // Hands-free IMU shortcut: face-down pauses the reader while playing.
 constexpr const char *kPrefImuShortcuts = "imu_short";
 
+// Tilt-to-scrub: while Paused in the reader, rolling the device left/right
+// scrubs through words. Default OFF. Key <= 15 chars.
+constexpr const char *kPrefTiltScrub = "tilt_scrub";
+
 // Gesture sensitivity (raw px / ms; presets on-device, raw via companion).
 constexpr const char *kPrefGestureSwipePx = "gest_swp";
 constexpr const char *kPrefGestureTapPx = "gest_tap";
