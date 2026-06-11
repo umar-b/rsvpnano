@@ -2967,6 +2967,85 @@ void DisplayManager::renderProgress(const String &title, const String &line1, co
   flushScaledFrame(scale, virtualWidth, virtualHeight);
 }
 
+void DisplayManager::renderStatsScreen(const String &title, const String &goalLine,
+                                       const String &streakLine, uint16_t goalPermille,
+                                       const uint32_t *sparkValues, uint8_t sparkCount,
+                                       uint32_t sparkMax) {
+  goalPermille = std::min<uint16_t>(1000, goalPermille);
+  const String renderKey = "stats|" + title + "|" + goalLine + "|" + streakLine + "|" +
+                           String(goalPermille) + "|" + String(sparkCount) + "|" +
+                           String(static_cast<unsigned long>(sparkMax)) + "|d:" +
+                           String(darkMode_ ? 1 : 0) + "|n:" + String(nightMode_ ? 1 : 0);
+  if (!initialized_ || renderKey == lastRenderKey_) {
+    return;
+  }
+  lastRenderKey_ = renderKey;
+
+  const int scale = 1;
+  const int virtualWidth = kDisplayWidth;
+  const int virtualHeight = kDisplayHeight;
+  const int glyphHeight = baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(title));
+  const int titleY = std::max(0, (virtualHeight - glyphHeight) / 2 - 70);
+  const int goalLineY = titleY + glyphHeight + 16;
+
+  const int barWidth = std::min(300, virtualWidth - 48);
+  const int barHeight = 10;
+  const int barX = std::max(0, (virtualWidth - barWidth) / 2);
+  const int barY = goalLineY + kTinyGlyphHeight * kTinyScale + 10;
+
+  const int streakY = barY + barHeight + 16;
+
+  // Sparkline panel below the streak line.
+  const int sparkTop = streakY + kTinyGlyphHeight * kTinyScale + 16;
+  const int sparkBottom = virtualHeight - 16;
+  const int sparkHeight = std::max(8, sparkBottom - sparkTop);
+  const int sparkAreaWidth = std::min(320, virtualWidth - 48);
+  const int sparkX = std::max(0, (virtualWidth - sparkAreaWidth) / 2);
+
+  clearVirtualBuffer(virtualWidth, virtualHeight);
+  drawWordLine(title, titleY, wordColor());
+  if (!goalLine.isEmpty()) {
+    drawTinyTextCentered(goalLine, goalLineY, dimColor(), kTinyScale);
+  }
+
+  // Goal progress bar (border + track + fill), mirroring renderProgress style.
+  fillVirtualRect(barX, barY, barWidth, barHeight, dimColor());
+  fillVirtualRect(barX + 1, barY + 1, barWidth - 2, barHeight - 2, backgroundColor());
+  const int fillWidth = std::max(0, ((barWidth - 2) * goalPermille) / 1000);
+  if (fillWidth > 0) {
+    fillVirtualRect(barX + 1, barY + 1, fillWidth, barHeight - 2, focusColor());
+  }
+
+  if (!streakLine.isEmpty()) {
+    drawTinyTextCentered(streakLine, streakY, focusColor(), kTinyScale);
+  }
+
+  // 30-day sparkline: evenly spaced bars scaled against the busiest day. A
+  // baseline keeps the panel readable even when every day is empty.
+  if (sparkValues != nullptr && sparkCount > 0) {
+    const int gap = 2;
+    const int barSlot = std::max(1, (sparkAreaWidth - (sparkCount - 1) * gap) / sparkCount);
+    fillVirtualRect(sparkX, sparkBottom, sparkAreaWidth, 1, dimColor());
+    for (uint8_t i = 0; i < sparkCount; ++i) {
+      const int bx = sparkX + i * (barSlot + gap);
+      if (bx + barSlot > sparkX + sparkAreaWidth) {
+        break;
+      }
+      int h = 0;
+      if (sparkMax > 0 && sparkValues[i] > 0) {
+        h = static_cast<int>((static_cast<uint64_t>(sparkValues[i]) * sparkHeight) / sparkMax);
+        h = std::max(2, std::min(sparkHeight, h));
+      }
+      if (h > 0) {
+        fillVirtualRect(bx, sparkBottom - h, barSlot, h, focusColor());
+      }
+    }
+  }
+
+  drawBatteryBadge();
+  flushScaledFrame(scale, virtualWidth, virtualHeight);
+}
+
 void DisplayManager::renderLifeScreensaver(const std::vector<uint32_t> &cells, uint16_t columns,
                                            uint16_t rows, uint32_t generation,
                                            const std::vector<uint32_t> *dimCells) {

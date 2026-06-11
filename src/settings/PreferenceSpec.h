@@ -40,6 +40,13 @@ constexpr IntRange kPacingDelayMsRange{0, 600};
 // Audio.
 constexpr IntRange kAudioVolumeRange{0, 100};
 
+// Reading stats daily word goal. The device cycles a small option set
+// (1000/2000/5000/10000/20000); the companion may set any value in this range.
+// The timezone offset is minutes east of UTC across the standard UTC-12..UTC+14
+// span (companion-set; device does not edit it on-screen).
+constexpr IntRange kDailyGoalRange{100, 100000};
+constexpr IntRange kTimezoneOffsetMinRange{-720, 840};
+
 // Index domains backed by an on-device option array (brightness levels, reader
 // font sizes). The array still lives in App; a static_assert there binds its
 // size to the max below, so the array and this spec cannot drift. The companion

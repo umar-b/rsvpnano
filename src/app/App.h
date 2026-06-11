@@ -27,7 +27,9 @@
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
 #include "stats/ReadingStats.h"
+#include "stats/StatsHistory.h"
 #include "storage/BookProgress.h"
+#include "time/DeviceClock.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
 #include "timer/FocusTimer.h"
@@ -350,6 +352,20 @@ class App {
   void endStatsSession(uint32_t nowMs);
   size_t countFinishedBooks();
   void openStatsScreen();
+  // Day key for the current session: the local calendar day from deviceClock_
+  // when valid, else the per-boot session key. Used by both ReadingStats and
+  // StatsHistory so they bucket in lockstep.
+  uint32_t currentStatsDayKey(uint32_t nowMs) const;
+  uint32_t dailyWordGoal() const;
+  void cycleDailyWordGoal(uint32_t nowMs);
+  String dailyWordGoalLabel() const;
+
+  // Device clock: opportunistic SNTP while on home Wi-Fi, NVS snapshot restore on
+  // boot + periodic refresh. Companion-set time arrives via CompanionSyncManager.
+  void loadDeviceClock();
+  void persistDeviceClockSnapshot();
+  void maybeSyncClockViaSntp(uint32_t nowMs);
+  void applyConsumedCompanionTime(uint32_t nowMs);
   void openRestartConfirm();
   void selectRestartConfirmItem(uint32_t nowMs);
   void openSdCardRepairConfirm();
@@ -527,6 +543,8 @@ class App {
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
   stats::ReadingStats readingStats_;
+  stats::StatsHistory statsHistory_;
+  devclock::DeviceClock deviceClock_;
   battery::Monitor batteryMonitor_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
@@ -571,6 +589,13 @@ class App {
   uint32_t sprintOverlayUntilMs_ = 0;
   uint32_t sprintOverlayWords_ = 0;
   uint8_t sprintWorkBlockCountAtStart_ = 0;  // completedWorkBlocks at sprint begin
+  // Per-boot fallback day key, used when the device clock is invalid (no RTC/NTP
+  // and no companion time yet). Real calendar day keys from deviceClock_ replace
+  // it once the clock is valid.
+  uint32_t statsBootDayKey_ = 0;
+  uint32_t dailyWordGoal_ = stats::kDefaultDailyGoal;
+  uint32_t lastClockSnapshotMs_ = 0;
+  bool clockSyncAttemptedThisLink_ = false;
   size_t restartConfirmSelectedIndex_ = 0;
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
   size_t updateConfirmSelectedIndex_ = 0;

@@ -61,6 +61,16 @@ constexpr const char *kPrefAccurateTime = "time_est_a";
 // can show something instantly on boot before the card is read. Keys <= 15 chars.
 constexpr const char *kPrefStatsWords = "st_words";
 constexpr const char *kPrefStatsMs = "st_ms";
+// Daily word goal (words/day target for the streak + progress bar). Authoritative
+// alongside the SD stats file; mirrored to NVS so the screen has it on boot.
+constexpr const char *kPrefStatsGoal = "st_goal";
+
+// Device clock snapshot. With no RTC, App restores an approximate-but-valid epoch
+// reference on boot from these (see src/time/DeviceClock.h staleness semantics),
+// refreshed on the periodic save cadence. Epoch is UTC seconds; tz is minutes
+// east of UTC. Keys <= 15 chars.
+constexpr const char *kPrefClockEpoch = "clk_epoch";
+constexpr const char *kPrefClockTzMin = "clk_tz";
 
 // Hands-free IMU shortcut: face-down pauses the reader while playing.
 constexpr const char *kPrefImuShortcuts = "imu_short";

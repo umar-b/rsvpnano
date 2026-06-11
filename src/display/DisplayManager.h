@@ -122,6 +122,12 @@ class DisplayManager {
   void renderStatus(const String &title, const String &line1 = "", const String &line2 = "");
   void renderProgress(const String &title, const String &line1 = "", const String &line2 = "",
                       int progressPercent = -1);
+  // Reading-stats screen: today's words vs the daily goal (progress bar), the
+  // current streak, and a 30-day sparkline. goalPermille is 0..1000; sparkline is
+  // `sparkCount` word-counts oldest-first/newest-last, scaled against sparkMax.
+  void renderStatsScreen(const String &title, const String &goalLine, const String &streakLine,
+                         uint16_t goalPermille, const uint32_t *sparkValues, uint8_t sparkCount,
+                         uint32_t sparkMax);
   void renderLifeScreensaver(const std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
                              uint32_t generation,
                              const std::vector<uint32_t> *dimCells = nullptr);
