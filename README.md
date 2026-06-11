@@ -136,7 +136,7 @@ See:
 
 ## Home Wi-Fi, RSS, And OTA
 
-The device can save home Wi-Fi credentials for features that need internet access, such as RSS feed checks and OTA firmware updates.
+The device can save up to 5 home Wi-Fi networks for features that need internet access, such as RSS feed checks and OTA firmware updates. When connecting, it scans first and tries the strongest reachable saved network, falling back through the rest.
 
 You can set Wi-Fi credentials from:
 

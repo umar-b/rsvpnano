@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <vector>
 
+#include "net/WifiCredentialStorePrefs.h"
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 
@@ -159,11 +160,13 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <label><input id="imuShortcuts" type="checkbox" style="width:auto"> Motion gestures: set down to sleep, lift to wake, flick to rewind</label>
 </div>
 <div class="card"><h2>Home Wi-Fi</h2>
-<p class="muted">Save Wi-Fi here for RSS and OTA. The reader does not send the saved password back to this page.</p>
+<p class="muted">Save up to 5 home networks for RSS and OTA. The reader does not send saved passwords back to this page; leave a password blank to keep the stored one (or for open networks).</p>
+<div id="wifiList"><p class="muted">No saved Wi-Fi loaded yet.</p></div>
+<h3>Add or update a network</h3>
 <label>SSID</label><input id="wifiSsid" autocomplete="off" placeholder="Network name">
 <label>Password</label><input id="wifiPassword" type="password" autocomplete="new-password" placeholder="Leave blank for open networks">
-<div class="row"><button class="primary" id="saveWifiButton">Save Wi-Fi</button><button class="danger" id="forgetWifiButton">Forget</button></div>
-<p id="wifiCurrent" class="muted">No saved Wi-Fi loaded yet.</p>
+<div class="row"><button class="primary" id="saveWifiButton">Save network</button><button class="danger" id="forgetWifiButton">Forget all</button></div>
+<p id="wifiCurrent" class="muted"></p>
 </div>
 </div>
 <p><button class="primary" id="saveSettingsButton">Save settings</button></p>
@@ -213,9 +216,11 @@ function snapWpm(v){v=Math.max(10,Math.min(1000,Math.round(+v||300)));return v<=
 function updateLabels(){['wpm','longWordMs','complexWordMs','punctuationMs','brightnessIndex','fontSizeIndex','tracking','anchorPercent','guideWidth','guideGap'].forEach(id=>{const l=$(id+'Value')||$(id.replace('Index','')+'Value');if(l)l.textContent=$(id).value+(id==='wpm'?' WPM':id.includes('Ms')?' ms':'')})}
 async function loadSettings(){try{settings=await api('/api/settings');setVal('readerMode',settings.reading.readerMode);setVal('pauseMode',settings.reading.pauseMode);setVal('wpm',snapWpm(settings.reading.wpm));setVal('longWordMs',settings.reading.pacing.longWordMs);setVal('complexWordMs',settings.reading.pacing.complexWordMs);setVal('punctuationMs',settings.reading.pacing.punctuationMs);setVal('displayMode',settings.display.nightMode?'night':settings.display.darkMode?'dark':'light');setVal('brightnessIndex',settings.display.brightnessIndex);setVal('handedness',settings.display.handedness);setVal('footerMetric',settings.display.footerMetric);setVal('batteryLabel',settings.display.batteryLabel);setVal('readingBattery',settings.display.readingBattery);setVal('readingChapter',settings.display.readingChapter);setVal('readingProgress',settings.display.readingProgress);setVal('typeface',settings.typography.typeface);setVal('fontSizeIndex',settings.display.fontSizeIndex);setVal('tracking',settings.typography.tracking);setVal('anchorPercent',settings.typography.anchorPercent);setVal('guideWidth',settings.typography.guideWidth);setVal('guideGap',settings.typography.guideGap);setVal('focusHighlight',settings.typography.focusHighlight);setVal('phantomWords',settings.display.phantomWords);setVal('imuShortcuts',settings.display.imuShortcuts);updateLabels()}catch(e){status('Settings load failed: '+e.message)}}
 async function saveSettings(){setVal('wpm',snapWpm(val('wpm')));const mode=val('displayMode');const payload={reading:{wpm:+val('wpm'),readerMode:val('readerMode'),pauseMode:val('pauseMode'),pacing:{longWordMs:+val('longWordMs'),complexWordMs:+val('complexWordMs'),punctuationMs:+val('punctuationMs')}},display:{darkMode:mode==='dark',nightMode:mode==='night',brightnessIndex:+val('brightnessIndex'),handedness:val('handedness'),footerMetric:val('footerMetric'),batteryLabel:val('batteryLabel'),readingBattery:val('readingBattery'),readingChapter:val('readingChapter'),readingProgress:val('readingProgress'),phantomWords:val('phantomWords'),imuShortcuts:val('imuShortcuts'),fontSizeIndex:+val('fontSizeIndex')},typography:{typeface:val('typeface'),focusHighlight:val('focusHighlight'),tracking:+val('tracking'),anchorPercent:+val('anchorPercent'),guideWidth:+val('guideWidth'),guideGap:+val('guideGap')}};try{settings=await api('/api/settings',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});status('Settings saved. Exit sync mode to apply all reader changes.')}catch(e){status('Settings save failed: '+e.message)}}
-async function loadWifi(){try{const w=await api('/api/wifi');$('wifiSsid').value=w.ssid||'';$('wifiPassword').value='';$('wifiCurrent').textContent=w.configured?'Saved network: '+w.ssid:'No home Wi-Fi saved.'}catch(e){status('Wi-Fi load failed: '+e.message)}}
-async function saveWifi(){const ssid=$('wifiSsid').value.trim();if(!ssid){status('Enter a Wi-Fi SSID first.');return}try{const w=await api('/api/wifi',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password:$('wifiPassword').value})});$('wifiPassword').value='';$('wifiCurrent').textContent='Saved network: '+w.ssid;status('Wi-Fi saved for RSS and OTA.')}catch(e){status('Wi-Fi save failed: '+e.message)}}
-async function forgetWifi(){if(!confirm('Forget saved Wi-Fi?'))return;try{await api('/api/wifi',{method:'DELETE'});$('wifiSsid').value='';$('wifiPassword').value='';$('wifiCurrent').textContent='No home Wi-Fi saved.';status('Wi-Fi credentials cleared.')}catch(e){status('Forget Wi-Fi failed: '+e.message)}}
+function renderWifiList(nets){if(!nets||!nets.length){$('wifiList').innerHTML='<p class="muted">No home Wi-Fi saved.</p>';return}$('wifiList').innerHTML=nets.map(n=>`<div class="item"><div class="item-title">${html(n.ssid)}</div><div class="item-meta">${n.passwordSet?'password saved':'open / no password'}</div><p><button data-edit="${html(encodeURIComponent(n.ssid))}">Edit</button> <button class="danger" data-forget="${html(encodeURIComponent(n.ssid))}">Forget</button></p></div>`).join('');document.querySelectorAll('[data-forget]').forEach(b=>b.onclick=()=>forgetWifiNetwork(decodeURIComponent(b.dataset.forget)));document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>{$('wifiSsid').value=decodeURIComponent(b.dataset.edit);$('wifiPassword').value='';$('wifiPassword').focus()})}
+async function loadWifi(){try{const w=await api('/api/wifi');renderWifiList(w.networks);$('wifiCurrent').textContent=w.networks&&w.networks.length?(w.networks.length+' of '+w.maxSlots+' slots used'):''}catch(e){status('Wi-Fi load failed: '+e.message)}}
+async function saveWifi(){const ssid=$('wifiSsid').value.trim();if(!ssid){status('Enter a Wi-Fi SSID first.');return}try{const w=await api('/api/wifi',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password:$('wifiPassword').value})});$('wifiSsid').value='';$('wifiPassword').value='';renderWifiList(w.networks);status('Network saved for RSS and OTA.')}catch(e){status('Wi-Fi save failed: '+e.message)}}
+async function forgetWifiNetwork(ssid){if(!confirm('Forget '+ssid+'?'))return;try{const w=await api('/api/wifi',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({forget:ssid})});renderWifiList(w.networks);status('Forgot '+ssid+'.')}catch(e){status('Forget failed: '+e.message)}}
+async function forgetWifi(){if(!confirm('Forget all saved Wi-Fi?'))return;try{const w=await api('/api/wifi',{method:'DELETE'});$('wifiSsid').value='';$('wifiPassword').value='';renderWifiList(w.networks);status('All Wi-Fi credentials cleared.')}catch(e){status('Forget Wi-Fi failed: '+e.message)}}
 async function loadRss(){try{const r=await api('/api/rss-feeds');$('rssFeeds').value=(r.feeds||[]).join('\n');status('RSS feeds loaded.')}catch(e){status('RSS load failed: '+e.message)}}
 async function saveRss(){const feeds=$('rssFeeds').value.split(/\n+/).map(s=>s.trim()).filter(Boolean);try{await api('/api/rss-feeds',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({feeds})});status('RSS feeds saved.')}catch(e){status('RSS save failed: '+e.message)}}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss()});
@@ -832,8 +837,13 @@ void CompanionSyncManager::handleWifi() {
   }
 
   if (server_.method() == HTTP_DELETE) {
-    preferences_.remove(kPrefWifiSsid);
-    preferences_.remove(kPrefWifiPass);
+    // Clear every saved slot plus any legacy single pair.
+    net::PreferencesKeyValueStore kv(preferences_);
+    net::WifiCredentialStore store(kv);
+    store.migrateLegacy(kPrefWifiSsid, kPrefWifiPass);
+    for (const net::WifiSlot &slot : store.list()) {
+      store.forget(slot.ssid);
+    }
     statusLine1_ = "Wi-Fi cleared";
     statusLine2_ = "";
     server_.send(200, "application/json", wifiJson());
@@ -848,7 +858,12 @@ void CompanionSyncManager::handleWifi() {
   }
 
   statusLine1_ = "Wi-Fi saved";
-  statusLine2_ = preferences_.getString(kPrefWifiSsid, "");
+  {
+    net::PreferencesKeyValueStore kv(preferences_);
+    net::WifiCredentialStore store(kv);
+    const std::vector<net::WifiSlot> slots = store.list();
+    statusLine2_ = slots.empty() ? String("") : String(slots.back().ssid.c_str());
+  }
   server_.send(200, "application/json", wifiJson());
 }
 
@@ -1503,16 +1518,63 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
 }
 
 String CompanionSyncManager::wifiJson() {
-  const String ssid = preferences_.getString(kPrefWifiSsid, "");
-  return String("{\"ok\":true,\"configured\":") + (ssid.isEmpty() ? "false" : "true") +
-         ",\"ssid\":\"" + jsonEscape(ssid) + "\",\"passwordSet\":" +
-         (preferences_.getString(kPrefWifiPass, "").isEmpty() ? "false" : "true") + "}";
+  // Expose all saved-network slots (SSIDs only; passwords are write-only and
+  // never sent back, matching the single-network behaviour the page had).
+  net::PreferencesKeyValueStore kv(preferences_);
+  net::WifiCredentialStore store(kv);
+  store.migrateLegacy(kPrefWifiSsid, kPrefWifiPass);
+  const std::vector<net::WifiSlot> slots = store.list();
+
+  String out = "{\"ok\":true,\"maxSlots\":";
+  out += String(net::WifiCredentialStore::kMaxSlots);
+  out += ",\"configured\":";
+  out += slots.empty() ? "false" : "true";
+  // Back-compat single fields: the most-recently-used slot.
+  String topSsid;
+  const net::WifiSlot *best = slots.empty() ? nullptr : &slots.front();
+  for (const net::WifiSlot &slot : slots) {
+    if (best == nullptr || slot.recency > best->recency) {
+      best = &slot;
+    }
+  }
+  if (best != nullptr) {
+    topSsid = String(best->ssid.c_str());
+  }
+  out += ",\"ssid\":\"" + jsonEscape(topSsid) + "\"";
+  out += ",\"networks\":[";
+  bool first = true;
+  for (const net::WifiSlot &slot : slots) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    out += "{\"slot\":" + String(slot.index) + ",\"ssid\":\"" +
+           jsonEscape(String(slot.ssid.c_str())) + "\",\"passwordSet\":" +
+           (slot.password.empty() ? "false" : "true") + "}";
+  }
+  out += "]}";
+  return out;
 }
 
 bool CompanionSyncManager::applyWifiJson(const String &body, String &error) {
   if (body.length() > 512) {
     error = "Wi-Fi payload too large";
     return false;
+  }
+
+  net::PreferencesKeyValueStore kv(preferences_);
+  net::WifiCredentialStore store(kv);
+  store.migrateLegacy(kPrefWifiSsid, kPrefWifiPass);
+
+  // {"forget":"<ssid>"} removes a saved network without saving a new one.
+  String forgetSsid;
+  if (readJsonString(body, "forget", forgetSsid)) {
+    forgetSsid.trim();
+    if (forgetSsid.isEmpty() || !store.forget(std::string(forgetSsid.c_str()))) {
+      error = "Network not found";
+      return false;
+    }
+    return true;
   }
 
   String ssid;
@@ -1537,8 +1599,9 @@ bool CompanionSyncManager::applyWifiJson(const String &body, String &error) {
     return false;
   }
 
-  preferences_.putString(kPrefWifiSsid, ssid);
-  preferences_.putString(kPrefWifiPass, password);
+  // Save into the slot store: updates in place if the SSID exists, else takes a
+  // free slot, else replaces the least-recently-used one.
+  store.save(std::string(ssid.c_str()), std::string(password.c_str()));
   return true;
 }
 
