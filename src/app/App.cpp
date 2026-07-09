@@ -193,7 +193,8 @@ constexpr size_t kSettingsPacingLongWordsIndex = 5;
 constexpr size_t kSettingsPacingComplexityIndex = 6;
 constexpr size_t kSettingsPacingPunctuationIndex = 7;
 constexpr size_t kSettingsPacingClauseIndex = 8;
-constexpr size_t kSettingsPacingResetIndex = 9;
+constexpr size_t kSettingsPacingAdaptiveIndex = 9;
+constexpr size_t kSettingsPacingResetIndex = 10;
 constexpr size_t kWifiSettingsNetworkIndex = 1;
 constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
@@ -673,6 +674,7 @@ void App::begin() {
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
   autoNightEnabled_ = preferences_.getBool(kPrefAutoNight, autoNightEnabled_);
+  adaptivePaceEnabled_ = preferences_.getBool(kPrefAdaptivePace, adaptivePaceEnabled_);
   loadGestureConfig();
   applyHandednessSettings(0, false);
   applyDisplayPreferences(0, false);
@@ -766,6 +768,11 @@ void App::update(uint32_t nowMs) {
   }
 
   updateAutoNight(nowMs);
+  if (adaptivePaceEnabled_ && adaptivePace_.update(nowMs)) {
+    reader_.setEaseScalePermille(adaptivePace_.scalePermille());
+    Serial.printf("[pacing] adaptive ease recovered -> %u steps\n",
+                  static_cast<unsigned int>(adaptivePace_.steps()));
+  }
 
   if (batteryWarningOverlayVisible_) {
     updateBatteryWarningOverlay(nowMs);
@@ -1520,6 +1527,11 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
   autoNightEnabled_ = preferences_.getBool(kPrefAutoNight, autoNightEnabled_);
   autoNightLastState_ = -1;
+  adaptivePaceEnabled_ = preferences_.getBool(kPrefAdaptivePace, adaptivePaceEnabled_);
+  if (!adaptivePaceEnabled_) {
+    adaptivePace_.reset();
+    reader_.setEaseScalePermille(1000);
+  }
 
   {
     // Respect a loaded book's per-book WPM override over the global pref when
@@ -1873,6 +1885,15 @@ void App::rewindToPreviousSentence(uint32_t nowMs) {
   pausedTouchIntent_ = TouchIntent::None;
   wpmFeedbackVisible_ = false;
   reader_.rewindSentence();
+
+  // Rewinding out of active reading is a comprehension signal; rewinding
+  // while paused is just navigation.
+  if (adaptivePaceEnabled_ && state_ == AppState::Playing &&
+      adaptivePace_.noteRewind(nowMs)) {
+    reader_.setEaseScalePermille(adaptivePace_.scalePermille());
+    Serial.printf("[pacing] adaptive ease -> %u steps\n",
+                  static_cast<unsigned int>(adaptivePace_.steps()));
+  }
 
   if (state_ == AppState::Playing) {
     setState(AppState::Paused, nowMs);
@@ -3289,6 +3310,17 @@ void App::selectSettingsItem(uint32_t nowMs) {
       preferences_.putUShort(kPrefPacingPunctuationMs, pacingPunctuationDelayMs_);
       pacingConfigChanged = true;
       break;
+    case kSettingsPacingAdaptiveIndex:
+      adaptivePaceEnabled_ = !adaptivePaceEnabled_;
+      preferences_.putBool(kPrefAdaptivePace, adaptivePaceEnabled_);
+      if (!adaptivePaceEnabled_) {
+        adaptivePace_.reset();
+        reader_.setEaseScalePermille(1000);
+      }
+      Serial.printf("[settings] adaptive pacing=%d\n", adaptivePaceEnabled_ ? 1 : 0);
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
     case kSettingsPacingResetIndex:
       pacingLongWordDelayMs_ = kDefaultPacingDelayMs;
       pacingComplexWordDelayMs_ = kDefaultPacingDelayMs;
@@ -4029,6 +4061,7 @@ void App::rebuildSettingsMenuItems() {
                                  pacingDelayLabel(pacingPunctuationDelayMs_));
     settingsMenuItems_.push_back(String("Clause pause: ") +
                                  pacingDelayLabel(pacingClausePauseDelayMs_));
+    settingsMenuItems_.push_back("Adaptive pacing: " + onOffLabel(adaptivePaceEnabled_));
     settingsMenuItems_.push_back(uiText(UiText::ResetPacing));
   } else if (menuScreen_ == MenuScreen::WifiSettings) {
     // Dynamic list: Back, one row per saved network, Add, then OTA controls.

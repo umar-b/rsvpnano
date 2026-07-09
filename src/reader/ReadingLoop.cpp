@@ -179,16 +179,30 @@ uint16_t ReadingLoop::wpm() const { return wpm_; }
 uint32_t ReadingLoop::wordIntervalMs() const { return 60000UL / wpm_; }
 
 uint32_t ReadingLoop::rampScaledIntervalMs() const {
-  const uint32_t baseIntervalMs = wordIntervalMs();
-  if (baseIntervalMs == 0) {
+  uint32_t intervalMs = wordIntervalMs();
+  if (intervalMs == 0) {
     return 0;
   }
   const uint16_t scalePercent =
       rampin::intervalScalePercent(wordsSinceResume_, rampInEnabled_);
-  if (scalePercent == 100) {
-    return baseIntervalMs;
+  if (scalePercent != 100) {
+    intervalMs = (intervalMs * static_cast<uint32_t>(scalePercent)) / 100UL;
   }
-  return (baseIntervalMs * static_cast<uint32_t>(scalePercent)) / 100UL;
+  if (easeScalePermille_ != 1000) {
+    intervalMs = (intervalMs * static_cast<uint32_t>(easeScalePermille_)) / 1000UL;
+  }
+  return intervalMs;
+}
+
+void ReadingLoop::setEaseScalePermille(uint16_t permille) {
+  // ponytail: 2x slower is already unreadable; clamp instead of configuring.
+  if (permille < 1000) {
+    permille = 1000;
+  }
+  if (permille > 2000) {
+    permille = 2000;
+  }
+  easeScalePermille_ = permille;
 }
 
 uint32_t ReadingLoop::currentWordDurationMs() const {

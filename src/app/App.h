@@ -33,6 +33,7 @@
 #include "stats/ReadingStats.h"
 #include "stats/StatsHistory.h"
 #include "storage/BookProgress.h"
+#include "reader/AdaptivePace.h"
 #include "time/DeviceClock.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
@@ -806,6 +807,8 @@ class App {
   int8_t autoNightLastState_ = -1;
   bool autoNightPrevDark_ = true;
   uint32_t lastAutoNightCheckMs_ = 0;
+  adaptivepace::Decider adaptivePace_;
+  bool adaptivePaceEnabled_ = false;
   UiLanguage uiLanguage_ = UiLanguage::English;
   ReaderMode readerMode_ = ReaderMode::Rsvp;
   HandednessMode handednessMode_ = HandednessMode::Right;

@@ -35,6 +35,12 @@ class ReadingLoop {
   void setRampInEnabled(bool enabled);
   bool rampInEnabled() const;
 
+  // Adaptive-pace ease: a temporary interval stretch (1000 = none, 1100 = 10%
+  // slower) folded into the word interval like the ramp scale. The set WPM is
+  // untouched, so display/persistence/estimates never see the ease.
+  void setEaseScalePermille(uint16_t permille);
+  uint16_t easeScalePermille() const { return easeScalePermille_; }
+
   const String &currentWord() const;
   String wordAt(size_t index) const;
   size_t currentIndex() const;
@@ -68,6 +74,7 @@ class ReadingLoop {
   // this to 0 to begin a fresh ramp on every resume into Playing.
   uint32_t wordsSinceResume_ = rampin::kRampWords;
   bool rampInEnabled_ = true;
+  uint16_t easeScalePermille_ = 1000;
   PacingConfig pacingConfig_;
   String currentWord_;
   std::vector<String> loadedWords_;

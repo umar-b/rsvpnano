@@ -23,6 +23,7 @@ constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
 constexpr const char *kPrefNightMode = "night";
 constexpr const char *kPrefAutoNight = "auto_night";
+constexpr const char *kPrefAdaptivePace = "adapt_pace";
 constexpr const char *kPrefUiLanguage = "ui_lang";
 constexpr const char *kPrefReaderMode = "read_mode";
 constexpr const char *kPrefHandedness = "handed";
