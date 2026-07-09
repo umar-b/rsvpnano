@@ -40,12 +40,18 @@ class RssFeedManager {
   // converted .rsvp text; null = item.body as a truncated plain summary.
   bool writeArticleFile(const feedparser::FeedItem &item, const String *rsvpBody);
   // Send-to-device queue (/config/sendqueue.txt, one URL per line, written by
-  // the companion's POST /api/send while the device had no internet). Each
-  // URL is fetched and converted like a full-text article on the next check.
-  std::vector<String> readSendQueue();
-  void processSendQueue(const std::vector<String> &urls, Preferences &preferences, Result &result,
-                        StatusCallback callback, void *context);
+  // the companion's POST /api/send while the device had no internet). Page
+  // URLs are fetched and converted like full-text articles; lines prefixed
+  // "epub " download the file into the book library instead.
+  struct QueuedSend {
+    String url;
+    bool epub = false;
+  };
+  std::vector<QueuedSend> readSendQueue();
+  void processSendQueue(const std::vector<QueuedSend> &sends, Preferences &preferences,
+                        Result &result, StatusCallback callback, void *context);
   bool saveSentUrl(const String &url, Preferences &preferences, Result &result);
+  bool saveEpubUrl(const String &url, Result &result, StatusCallback callback, void *context);
   bool itemAlreadySeen(const feedparser::FeedItem &item, Preferences &preferences);
   void markItemSeen(const feedparser::FeedItem &item, Preferences &preferences);
   String seenKeyForItem(const feedparser::FeedItem &item) const;

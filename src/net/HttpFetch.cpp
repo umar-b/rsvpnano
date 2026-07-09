@@ -31,9 +31,11 @@ FetchStatus drainBody(HTTPClient &http, const FetchOptions &options, FetchResult
 
   const int reportedSize = http.getSize();
   result.body = "";
-  result.body.reserve(reportedSize > 0
-                          ? std::min(static_cast<size_t>(reportedSize), options.maxBodyBytes)
-                          : options.reserveBytes);
+  if (!options.bodySink) {
+    result.body.reserve(reportedSize > 0
+                            ? std::min(static_cast<size_t>(reportedSize), options.maxBodyBytes)
+                            : options.reserveBytes);
+  }
 
   uint8_t buffer[512];
   size_t totalRead = 0;
@@ -76,8 +78,14 @@ FetchStatus drainBody(HTTPClient &http, const FetchOptions &options, FetchResult
 
     lastByteMs = millis();
     totalRead += static_cast<size_t>(bytesRead);
-    for (int i = 0; i < bytesRead; ++i) {
-      result.body += static_cast<char>(buffer[i]);
+    if (options.bodySink) {
+      if (!options.bodySink(buffer, static_cast<size_t>(bytesRead))) {
+        return FetchStatus::SinkFailed;
+      }
+    } else {
+      for (int i = 0; i < bytesRead; ++i) {
+        result.body += static_cast<char>(buffer[i]);
+      }
     }
   }
 

@@ -36,7 +36,9 @@ constexpr size_t kMaxFullTextWords = 20000;
 constexpr size_t kMinFullTextWords = 120;
 // Send-to-device: URLs queued by the companion, fetched on the next check.
 constexpr const char *kSendQueuePath = "/config/sendqueue.txt";
+constexpr const char *kBookFilesPath = "/books/books";
 constexpr uint8_t kMaxQueuedSends = 12;
+constexpr size_t kMaxEpubBytes = 16UL * 1024UL * 1024UL;
 // The user explicitly asked for this page, so accept much thinner extractions
 // than the feed full-text path does.
 constexpr size_t kMinSentWords = 20;
@@ -224,7 +226,7 @@ RssFeedManager::Result RssFeedManager::checkFeeds(const OtaUpdater::Config &wifi
 
   // Links queued by the companion's "send to reader" while the device had no
   // internet; they piggyback on this check's Wi-Fi session.
-  const std::vector<String> queuedSends = readSendQueue();
+  const std::vector<QueuedSend> queuedSends = readSendQueue();
 
   File config;
   for (const char *path : kConfigPaths) {
@@ -532,41 +534,127 @@ bool RssFeedManager::writeArticleFile(const feedparser::FeedItem &item, const St
   return true;
 }
 
-std::vector<String> RssFeedManager::readSendQueue() {
-  std::vector<String> urls;
+std::vector<RssFeedManager::QueuedSend> RssFeedManager::readSendQueue() {
+  std::vector<QueuedSend> sends;
   File file = SD_MMC.open(kSendQueuePath);
   if (!file || file.isDirectory()) {
     if (file) {
       file.close();
     }
-    return urls;
+    return sends;
   }
-  while (file.available() && urls.size() < kMaxQueuedSends) {
+  while (file.available() && sends.size() < kMaxQueuedSends) {
     String line = file.readStringUntil('\n');
     line.trim();
+    QueuedSend send;
+    if (line.startsWith("epub ")) {
+      send.epub = true;
+      line = line.substring(5);
+      line.trim();
+    }
     if (startsWithHttp(line)) {
-      urls.push_back(line);
+      send.url = line;
+      sends.push_back(send);
     }
   }
   file.close();
-  return urls;
+  return sends;
 }
 
-void RssFeedManager::processSendQueue(const std::vector<String> &urls, Preferences &preferences,
-                                      Result &result, StatusCallback callback, void *context) {
-  if (urls.empty()) {
+void RssFeedManager::processSendQueue(const std::vector<QueuedSend> &sends,
+                                      Preferences &preferences, Result &result,
+                                      StatusCallback callback, void *context) {
+  if (sends.empty()) {
     return;
   }
 
-  for (size_t i = 0; i < urls.size(); ++i) {
-    report(callback, context, "Sent link " + String(i + 1) + "/" + String(urls.size()),
-           feedparser::hostLabelForUrl(urls[i]), 80);
-    saveSentUrl(urls[i], preferences, result);
+  for (size_t i = 0; i < sends.size(); ++i) {
+    report(callback, context, "Sent link " + String(i + 1) + "/" + String(sends.size()),
+           feedparser::hostLabelForUrl(sends[i].url), 80);
+    if (sends[i].epub) {
+      saveEpubUrl(sends[i].url, result, callback, context);
+    } else {
+      saveSentUrl(sends[i].url, preferences, result);
+    }
   }
 
   // Processed in full; failures were logged and are dropped rather than
   // retried forever (the companion can re-send).
   SD_MMC.remove(kSendQueuePath);
+}
+
+bool RssFeedManager::saveEpubUrl(const String &url, Result &result, StatusCallback callback,
+                                 void *context) {
+  // Filename from the URL basename, restricted to safe characters.
+  String path = url;
+  const int query = path.indexOf('?');
+  if (query >= 0) {
+    path = path.substring(0, query);
+  }
+  const int slash = path.lastIndexOf('/');
+  String name = slash >= 0 ? path.substring(slash + 1) : String("");
+  String safe;
+  for (size_t i = 0; i < name.length() && safe.length() < 60; ++i) {
+    if (isSafeFilenameChar(name[i])) {
+      safe += name[i];
+    }
+  }
+  String lowered = safe;
+  lowered.toLowerCase();
+  if (safe.isEmpty() || !lowered.endsWith(".epub")) {
+    char suffix[16];
+    std::snprintf(suffix, sizeof(suffix), "%08lx", static_cast<unsigned long>(fnv1a(url)));
+    safe = "download-" + String(suffix) + ".epub";
+  }
+
+  SD_MMC.mkdir(kBooksPath);
+  SD_MMC.mkdir(kBookFilesPath);
+  const String finalPath = String(kBookFilesPath) + "/" + safe;
+  const String tmpPath = finalPath + ".part";
+  SD_MMC.remove(tmpPath);
+
+  File file = SD_MMC.open(tmpPath, FILE_WRITE);
+  if (!file) {
+    Serial.printf("[rss] could not create %s\n", tmpPath.c_str());
+    return false;
+  }
+
+  net::FetchOptions options;
+  options.userAgent = userAgent();
+  options.followRedirects = true;
+  options.maxBodyBytes = kMaxEpubBytes;
+  options.totalTimeoutMs = 0;  // large files; the idle timeout guards stalls
+  options.idleTimeoutMs = 15000;
+  bool sinkOk = true;
+  options.bodySink = [&file, &sinkOk](const uint8_t *data, size_t length) {
+    sinkOk = file.write(data, length) == length;
+    return sinkOk;
+  };
+  options.progress = [this, callback, context, &safe](size_t bytesRead) {
+    report(callback, context, "Downloading " + safe,
+           String(static_cast<unsigned int>(bytesRead / 1024)) + " KB", 85);
+  };
+
+  const net::FetchResult fetched = net::httpGet(url, options);
+  file.close();
+
+  if (fetched.status != net::FetchStatus::Ok || fetched.capped) {
+    SD_MMC.remove(tmpPath);
+    Serial.printf("[rss] epub download failed status=%d capped=%d url=%s\n",
+                  static_cast<int>(fetched.status), fetched.capped ? 1 : 0, url.c_str());
+    return false;
+  }
+
+  SD_MMC.remove(finalPath);
+  if (!SD_MMC.rename(tmpPath, finalPath)) {
+    SD_MMC.remove(tmpPath);
+    Serial.printf("[rss] epub rename failed %s\n", finalPath.c_str());
+    return false;
+  }
+
+  ++result.articlesSaved;
+  Serial.printf("[rss] epub saved %s\n", finalPath.c_str());
+  return true;
 }
 
 bool RssFeedManager::saveSentUrl(const String &url, Preferences &preferences, Result &result) {

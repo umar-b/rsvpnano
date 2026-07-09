@@ -131,7 +131,7 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <p><button class="primary" id="uploadArticleButton">Upload article</button></p>
 </div>
 <div class="card"><h2>Send a Link</h2>
-<p class="muted">The reader fetches and converts the page during its next RSS check (Menu &gt; RSS).</p>
+<p class="muted">The reader fetches the page during its next RSS check (Menu &gt; RSS). Direct <code>.epub</code> links download as books.</p>
 <label>URL</label><input id="sendUrlInput" placeholder="https://...">
 <p><button class="primary" id="sendUrlButton">Queue for reader</button></p>
 </div>
@@ -983,6 +983,17 @@ void CompanionSyncManager::handleSendUrl() {
     return;
   }
 
+  // Direct .epub links download into the book library on the reader's next
+  // RSS check; everything else is fetched and converted as an article.
+  String pathOnly = url;
+  const int queryAt = pathOnly.indexOf('?');
+  if (queryAt >= 0) {
+    pathOnly = pathOnly.substring(0, queryAt);
+  }
+  pathOnly.toLowerCase();
+  const bool isEpub = pathOnly.endsWith(".epub");
+  const String queueLine = isEpub ? "epub " + url : url;
+
   size_t queued = 0;
   {
     File existing = SD_MMC.open("/config/sendqueue.txt", FILE_READ);
@@ -994,7 +1005,7 @@ void CompanionSyncManager::handleSendUrl() {
           continue;
         }
         ++queued;
-        if (line == url) {
+        if (line == queueLine) {
           existing.close();
           server_.send(200, "application/json", "{\"ok\":true,\"alreadyQueued\":true}");
           return;
@@ -1017,9 +1028,9 @@ void CompanionSyncManager::handleSendUrl() {
     server_.send(500, "application/json", "{\"ok\":false,\"error\":\"SD write failed\"}");
     return;
   }
-  file.println(url);
+  file.println(queueLine);
   file.close();
-  Serial.printf("[sync] queued send: %s\n", url.c_str());
+  Serial.printf("[sync] queued send%s: %s\n", isEpub ? " (epub)" : "", url.c_str());
   server_.send(200, "application/json",
                "{\"ok\":true,\"queued\":" + String(static_cast<unsigned int>(queued + 1)) + "}");
 }

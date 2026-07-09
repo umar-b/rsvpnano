@@ -36,6 +36,10 @@ struct FetchOptions {
   uint32_t idleTimeoutMs = 0;
   // Called with total bytes read so far, roughly once per second of drain.
   std::function<void(size_t bytesRead)> progress;
+  // When set, body bytes stream here (e.g. straight to an SD file) instead of
+  // accumulating in result.body -- required for payloads larger than RAM.
+  // Return false to abort the fetch (status becomes SinkFailed).
+  std::function<bool(const uint8_t *data, size_t length)> bodySink;
 };
 
 enum class FetchStatus : uint8_t {
@@ -46,6 +50,7 @@ enum class FetchStatus : uint8_t {
   NoStream,
   TotalTimeout,
   IdleTimeout,
+  SinkFailed,
 };
 
 struct FetchResult {
