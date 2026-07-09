@@ -2,11 +2,10 @@
 
 #include <HTTPClient.h>
 #include <SD_MMC.h>
-#include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <algorithm>
 #include <vector>
 
+#include "net/HttpFetch.h"
 #include "net/WifiConnection.h"
 #include "rss/FeedParser.h"
 
@@ -49,12 +48,6 @@ String userAgent() { return String("RSVP-Nano-RSS/1.0"); }
 
 String feedProgressLabel(uint8_t feedIndex, uint8_t feedCount) {
   return "Feed " + String(feedIndex) + "/" + String(feedCount);
-}
-
-bool isRedirectStatus(int statusCode) {
-  return statusCode == HTTP_CODE_MOVED_PERMANENTLY || statusCode == HTTP_CODE_FOUND ||
-         statusCode == HTTP_CODE_SEE_OTHER || statusCode == HTTP_CODE_TEMPORARY_REDIRECT ||
-         statusCode == HTTP_CODE_PERMANENT_REDIRECT;
 }
 
 String friendlyHttpError(int statusCode) {
@@ -280,133 +273,78 @@ bool RssFeedManager::fetchUrl(const String &url, String &body, String &error,
                               StatusCallback callback, void *context) {
   String currentUrl = url;
   for (uint8_t redirectCount = 0; redirectCount <= kMaxFeedRedirects; ++redirectCount) {
-    WiFiClientSecure secureClient;
-    WiFiClient plainClient;
-    secureClient.setInsecure();
-    secureClient.setHandshakeTimeout(15);
-
-    HTTPClient http;
-    http.setUserAgent(userAgent());
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    http.setTimeout(15000);
-    const char *headers[] = {"Location"};
-    http.collectHeaders(headers, 1);
-
-    const bool ok = currentUrl.startsWith("https://") ? http.begin(secureClient, currentUrl)
-                                                      : http.begin(plainClient, currentUrl);
-    if (!ok) {
-      error = "Feed link did not open";
-      Serial.printf("[rss] begin failed url=%s\n", currentUrl.c_str());
-      return false;
-    }
-
     report(callback, context, feedProgressLabel(feedIndex, feedCount),
            "Requesting " + feedparser::hostLabelForUrl(currentUrl), 18 + feedIndex * 7);
-    const int statusCode = http.GET();
-    if (isRedirectStatus(statusCode)) {
-      String location = http.header("Location");
-      http.end();
-      if (location.isEmpty()) {
-        error = "Feed moved but gave no link";
-        Serial.printf("[rss] redirect missing location status=%d url=%s\n", statusCode,
-                      currentUrl.c_str());
-        return false;
-      }
-      currentUrl = resolveRedirectUrl(currentUrl, location);
-      Serial.printf("[rss] redirect %u url=%s\n", static_cast<unsigned int>(statusCode),
-                    currentUrl.c_str());
+
+    net::FetchOptions options;
+    options.userAgent = userAgent();
+    options.maxBodyBytes = kMaxFeedBytes;
+    options.reserveBytes = 8192;
+    options.totalTimeoutMs = kFeedTotalTimeoutMs;
+    options.idleTimeoutMs = kFeedIdleTimeoutMs;
+    options.progress = [&](size_t bytesRead) {
       report(callback, context, feedProgressLabel(feedIndex, feedCount),
-             "Redirecting to " + feedparser::hostLabelForUrl(currentUrl), 18 + feedIndex * 7);
-      delay(250);
-      continue;
-    }
-    if (statusCode != HTTP_CODE_OK) {
-      error = friendlyHttpError(statusCode);
-      Serial.printf("[rss] http failed status=%d message=%s url=%s\n", statusCode, error.c_str(),
-                    currentUrl.c_str());
-      http.end();
-      return false;
-    }
+             "Downloaded " + String(static_cast<unsigned int>(bytesRead / 1024)) + " KB",
+             20 + feedIndex * 7);
+    };
+    const net::FetchResult fetched = net::httpGet(currentUrl, options);
 
-    WiFiClient *stream = http.getStreamPtr();
-    if (stream == nullptr) {
-      error = "No data from site";
-      Serial.printf("[rss] no stream url=%s\n", currentUrl.c_str());
-      http.end();
-      return false;
-    }
-
-    body = "";
-    body.reserve(8192);
-    uint8_t buffer[512];
-    size_t totalRead = 0;
-    const int reportedSize = http.getSize();
-    const uint32_t startedMs = millis();
-    uint32_t lastByteMs = startedMs;
-    uint32_t lastReportMs = 0;
-    while (http.connected() || stream->available()) {
-      const uint32_t nowMs = millis();
-      if (nowMs - startedMs > kFeedTotalTimeoutMs) {
-        error = "Site took too long";
-        Serial.printf("[rss] total timeout url=%s bytes=%u\n", currentUrl.c_str(),
-                      static_cast<unsigned int>(totalRead));
-        http.end();
-        return false;
-      }
-      if (nowMs - lastByteMs > kFeedIdleTimeoutMs) {
-        error = "Site stopped sending data";
-        Serial.printf("[rss] idle timeout url=%s bytes=%u\n", currentUrl.c_str(),
-                      static_cast<unsigned int>(totalRead));
-        http.end();
-        return false;
-      }
-      if (nowMs - lastReportMs >= kFeedProgressIntervalMs) {
-        lastReportMs = nowMs;
+    switch (fetched.status) {
+      case net::FetchStatus::Redirect:
+        if (fetched.location.isEmpty()) {
+          error = "Feed moved but gave no link";
+          Serial.printf("[rss] redirect missing location status=%d url=%s\n", fetched.httpCode,
+                        currentUrl.c_str());
+          return false;
+        }
+        currentUrl = resolveRedirectUrl(currentUrl, fetched.location);
+        Serial.printf("[rss] redirect %u url=%s\n", static_cast<unsigned int>(fetched.httpCode),
+                      currentUrl.c_str());
         report(callback, context, feedProgressLabel(feedIndex, feedCount),
-               "Downloaded " + String(static_cast<unsigned int>(totalRead / 1024)) + " KB",
-               20 + feedIndex * 7);
-      }
-      if (reportedSize > 0 && totalRead >= static_cast<size_t>(reportedSize)) {
-        break;
-      }
-      const int available = stream->available();
-      if (available <= 0) {
-        delay(1);
+               "Redirecting to " + feedparser::hostLabelForUrl(currentUrl), 18 + feedIndex * 7);
+        delay(250);
         continue;
-      }
-      const size_t remaining = kMaxFeedBytes - totalRead;
-      if (remaining == 0) {
+      case net::FetchStatus::BeginFailed:
+        error = "Feed link did not open";
+        Serial.printf("[rss] begin failed url=%s\n", currentUrl.c_str());
+        return false;
+      case net::FetchStatus::HttpError:
+        error = friendlyHttpError(fetched.httpCode);
+        Serial.printf("[rss] http failed status=%d message=%s url=%s\n", fetched.httpCode,
+                      error.c_str(), currentUrl.c_str());
+        return false;
+      case net::FetchStatus::NoStream:
+        error = "No data from site";
+        Serial.printf("[rss] no stream url=%s\n", currentUrl.c_str());
+        return false;
+      case net::FetchStatus::TotalTimeout:
+        error = "Site took too long";
+        Serial.printf("[rss] total timeout url=%s\n", currentUrl.c_str());
+        return false;
+      case net::FetchStatus::IdleTimeout:
+        error = "Site stopped sending data";
+        Serial.printf("[rss] idle timeout url=%s\n", currentUrl.c_str());
+        return false;
+      case net::FetchStatus::Ok:
         break;
-      }
-      const size_t chunkSize =
-          std::min(remaining, std::min(sizeof(buffer), static_cast<size_t>(available)));
-      const int bytesRead = stream->readBytes(buffer, chunkSize);
-      if (bytesRead <= 0) {
-        break;
-      }
-      lastByteMs = millis();
-      totalRead += static_cast<size_t>(bytesRead);
-      for (int i = 0; i < bytesRead; ++i) {
-        body += static_cast<char>(buffer[i]);
-      }
     }
-    http.end();
 
+    body = fetched.body;
     if (body.isEmpty()) {
       error = "Feed was empty";
       Serial.printf("[rss] empty response url=%s\n", currentUrl.c_str());
       return false;
     }
-    if (totalRead >= kMaxFeedBytes) {
+    if (fetched.capped) {
       Serial.printf("[rss] feed capped url=%s bytes=%u\n", currentUrl.c_str(),
-                    static_cast<unsigned int>(totalRead));
+                    static_cast<unsigned int>(body.length()));
       report(callback, context, feedProgressLabel(feedIndex, feedCount),
              "Reached " + String(static_cast<unsigned int>(kMaxFeedBytes / 1024)) + " KB cap",
              20 + feedIndex * 7);
       delay(500);
     } else {
       report(callback, context, feedProgressLabel(feedIndex, feedCount),
-             "Downloaded " + String(static_cast<unsigned int>(totalRead / 1024)) + " KB",
+             "Downloaded " + String(static_cast<unsigned int>(body.length() / 1024)) + " KB",
              20 + feedIndex * 7);
     }
     return true;

@@ -2,16 +2,16 @@
 
 #include <SD_MMC.h>
 #include <algorithm>
-#include <cctype>
-#include <cstdlib>
 #include <cstring>
 #include <esp32s3/rom/miniz.h>
 #include <esp_heap_caps.h>
 #include <vector>
 
-#include "text/LatinText.h"
-#include "text/TextDecode.h"
+#include "text/EpubConvert.h"
 
+// SD-card/zip adapter around the pure epubconvert:: kernel: archive walking,
+// miniz inflate, progress reporting, and the temp-file/marker dance live
+// here; the XHTML -> .rsvp conversion itself is host-tested in the module.
 namespace {
 
 constexpr uint32_t kZipEocdSignature = 0x06054B50UL;
@@ -26,10 +26,6 @@ constexpr uint16_t kMaxZipEntries = 2048;
 constexpr uint16_t kMaxZipNameLength = 512;
 constexpr size_t kReadChunkBytes = 4096;
 constexpr size_t kInflateInputChunkBytes = 4096;
-constexpr size_t kMaxTagChars = 512;
-constexpr size_t kMaxEntityChars = 16;
-constexpr size_t kOutputWrapWidth = 96;
-constexpr size_t kBufferedTextFlushThreshold = 220;
 constexpr const char *kConverterVersion = "stream-v6";
 
 enum class ContentExtractStatus {
@@ -48,12 +44,6 @@ struct ZipEntry {
   uint32_t localHeaderOffset = 0;
 };
 
-struct ManifestItem {
-  String id;
-  String path;
-  String mediaType;
-};
-
 uint16_t readLe16(const uint8_t *data) {
   return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
 }
@@ -66,12 +56,6 @@ uint32_t readLe32(const uint8_t *data) {
 void serviceBackground() {
   yield();
   delay(0);
-}
-
-bool hasWordLimit(size_t maxWords) { return maxWords > 0; }
-
-bool reachedWordLimit(size_t wordCount, size_t maxWords) {
-  return hasWordLimit(maxWords) && wordCount >= maxWords;
 }
 
 bool readExact(File &file, uint8_t *buffer, size_t length) {
@@ -136,1066 +120,11 @@ String toLowerCopy(String value) {
   return value;
 }
 
-bool isWhitespace(char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; }
-
-bool startsWithAt(const String &text, int position, const char *needle) {
-  const size_t needleLength = std::strlen(needle);
-  if (position < 0 || static_cast<size_t>(position) + needleLength > text.length()) {
-    return false;
-  }
-
-  for (size_t i = 0; i < needleLength; ++i) {
-    if (text[static_cast<size_t>(position) + i] != needle[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
-String basenameWithoutExtension(const String &path) {
-  const int separator = path.lastIndexOf('/');
-  String name = separator >= 0 ? path.substring(separator + 1) : path;
-  const int dot = name.lastIndexOf('.');
-  if (dot > 0) {
-    name = name.substring(0, dot);
-  }
-  name.trim();
-  return name.isEmpty() ? String("Untitled") : name;
-}
-
-String normalizeZipName(String path) {
-  path.replace('\\', '/');
-  while (path.startsWith("/")) {
-    path.remove(0, 1);
-  }
-  return path;
-}
-
 bool isArchiveHintEntry(const String &name) {
   const String lowered = toLowerCopy(name);
   return lowered.indexOf("container") >= 0 || lowered.endsWith(".opf") ||
          lowered.endsWith(".ncx") || lowered.endsWith(".xhtml") ||
          lowered.endsWith(".html") || lowered.endsWith(".htm");
-}
-
-int hexValue(char c) {
-  if (c >= '0' && c <= '9') {
-    return c - '0';
-  }
-  if (c >= 'a' && c <= 'f') {
-    return c - 'a' + 10;
-  }
-  if (c >= 'A' && c <= 'F') {
-    return c - 'A' + 10;
-  }
-  return -1;
-}
-
-String percentDecodePath(const String &path) {
-  String decoded;
-  decoded.reserve(path.length());
-
-  for (size_t i = 0; i < path.length(); ++i) {
-    if (path[i] == '%' && i + 2 < path.length()) {
-      const int high = hexValue(path[i + 1]);
-      const int low = hexValue(path[i + 2]);
-      if (high >= 0 && low >= 0) {
-        decoded += static_cast<char>((high << 4) | low);
-        i += 2;
-        continue;
-      }
-    }
-    decoded += path[i];
-  }
-
-  return decoded;
-}
-
-String collapseZipPath(const String &path) {
-  std::vector<String> parts;
-  size_t start = 0;
-
-  while (start <= path.length()) {
-    int separator = path.indexOf('/', start);
-    if (separator < 0) {
-      separator = path.length();
-    }
-
-    String part = path.substring(start, separator);
-    if (part == "..") {
-      if (!parts.empty()) {
-        parts.pop_back();
-      }
-    } else if (!part.isEmpty() && part != ".") {
-      parts.push_back(part);
-    }
-
-    if (static_cast<size_t>(separator) >= path.length()) {
-      break;
-    }
-    start = static_cast<size_t>(separator) + 1;
-  }
-
-  String collapsed;
-  for (size_t i = 0; i < parts.size(); ++i) {
-    if (i > 0) {
-      collapsed += "/";
-    }
-    collapsed += parts[i];
-  }
-  return collapsed;
-}
-
-String directoryForPath(const String &path) {
-  const int separator = path.lastIndexOf('/');
-  if (separator < 0) {
-    return "";
-  }
-  return path.substring(0, separator + 1);
-}
-
-String resolveZipPath(const String &baseDirectory, const String &href) {
-  String path = href;
-
-  int fragment = path.indexOf('#');
-  if (fragment >= 0) {
-    path = path.substring(0, fragment);
-  }
-  int query = path.indexOf('?');
-  if (query >= 0) {
-    path = path.substring(0, query);
-  }
-
-  path = percentDecodePath(path);
-  path = normalizeZipName(path);
-  if (!href.startsWith("/")) {
-    path = baseDirectory + path;
-  }
-
-  return collapseZipPath(path);
-}
-
-String attributeValue(const String &tag, const char *name) {
-  const String key(name);
-  int position = 0;
-
-  while (position >= 0 && static_cast<size_t>(position) < tag.length()) {
-    position = tag.indexOf(key, position);
-    if (position < 0) {
-      return "";
-    }
-
-    const bool boundaryBefore =
-        position == 0 || isWhitespace(tag[position - 1]) || tag[position - 1] == '<' ||
-        tag[position - 1] == '/';
-    int afterName = position + key.length();
-    if (!boundaryBefore ||
-        (static_cast<size_t>(afterName) < tag.length() &&
-         !(isWhitespace(tag[afterName]) || tag[afterName] == '='))) {
-      position = afterName;
-      continue;
-    }
-
-    while (static_cast<size_t>(afterName) < tag.length() && isWhitespace(tag[afterName])) {
-      ++afterName;
-    }
-    if (static_cast<size_t>(afterName) >= tag.length() || tag[afterName] != '=') {
-      position = afterName;
-      continue;
-    }
-    ++afterName;
-    while (static_cast<size_t>(afterName) < tag.length() && isWhitespace(tag[afterName])) {
-      ++afterName;
-    }
-    if (static_cast<size_t>(afterName) >= tag.length()) {
-      return "";
-    }
-
-    const char quote = tag[afterName];
-    if (quote == '"' || quote == '\'') {
-      const int end = tag.indexOf(quote, afterName + 1);
-      if (end < 0) {
-        return "";
-      }
-      return tag.substring(afterName + 1, end);
-    }
-
-    int end = afterName;
-    while (static_cast<size_t>(end) < tag.length() && !isWhitespace(tag[end]) && tag[end] != '>') {
-      ++end;
-    }
-    return tag.substring(afterName, end);
-  }
-
-  return "";
-}
-
-
-void appendNormalizedChar(String &target, char c) {
-  if (c == '\r' || c == '\n' || c == '\t') {
-    c = ' ';
-  }
-
-  if (isWhitespace(c)) {
-    if (!target.isEmpty() && target[target.length() - 1] != ' ') {
-      target += ' ';
-    }
-    return;
-  }
-
-  target += c;
-}
-
-String plainTextFromXmlFragment(const String &fragment) {
-  String text;
-  text.reserve(std::min<size_t>(fragment.length(), 160));
-
-  for (size_t i = 0; i < fragment.length(); ++i) {
-    const char c = fragment[i];
-    if (c == '<') {
-      const int tagEnd = fragment.indexOf('>', i + 1);
-      if (tagEnd < 0) {
-        break;
-      }
-      i = tagEnd;
-      appendNormalizedChar(text, ' ');
-      continue;
-    }
-
-    if (c == '&') {
-      const int entityEnd = fragment.indexOf(';', i + 1);
-      if (entityEnd > 0 && entityEnd - static_cast<int>(i) <= 12) {
-        const String decoded = textdecode::decodedEntityText(fragment.substring(i + 1, entityEnd));
-        for (size_t decodedIndex = 0; decodedIndex < decoded.length(); ++decodedIndex) {
-          appendNormalizedChar(text, decoded[decodedIndex]);
-        }
-        i = entityEnd;
-        continue;
-      }
-    }
-
-    appendNormalizedChar(text, c);
-  }
-
-  text.trim();
-  return textdecode::normalizeDisplayText(text);
-}
-
-bool hasReadableText(const String &token) {
-  for (size_t i = 0; i < token.length(); ++i) {
-    const uint8_t value = static_cast<uint8_t>(token[i]);
-    if (std::isalnum(value) != 0 || value >= 0x80) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool isReadableTextChar(char c) {
-  const uint8_t value = static_cast<uint8_t>(c);
-  return std::isalnum(value) != 0 || value >= 0x80;
-}
-
-bool isInlineWordHyphen(const String &text, size_t index) {
-  if (index == 0 || index + 1 >= text.length() || text[index] != '-') {
-    return false;
-  }
-  if (text[index - 1] == '-' || text[index + 1] == '-') {
-    return false;
-  }
-  return isReadableTextChar(text[index - 1]) && isReadableTextChar(text[index + 1]);
-}
-
-bool isHyphenToken(const String &token) {
-  if (token.isEmpty()) {
-    return false;
-  }
-  for (size_t i = 0; i < token.length(); ++i) {
-    if (token[i] != '-') {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool isEllipsisToken(const String &token) {
-  if (token.length() < 3) {
-    return false;
-  }
-  for (size_t i = 0; i < token.length(); ++i) {
-    if (token[i] != '.') {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool hasReadableOrRhythmText(const String &token) {
-  return hasReadableText(token) || isHyphenToken(token);
-}
-
-bool writeBodyLine(File &output, const String &line, size_t &wordCount, size_t maxWords);
-
-bool flushWordAlignedPrefix(File &output, String &line, size_t &wordCount, size_t maxWords) {
-  line.trim();
-  if (line.isEmpty()) {
-    line = "";
-    return true;
-  }
-
-  int split = static_cast<int>(line.length()) - 1;
-  while (split >= 0 && !isWhitespace(line[split])) {
-    --split;
-  }
-
-  if (split < 0) {
-    return true;
-  }
-
-  String prefix = line.substring(0, split);
-  String remainder = line.substring(split + 1);
-  prefix.trim();
-  remainder.trim();
-
-  if (prefix.isEmpty()) {
-    line = remainder;
-    return true;
-  }
-
-  const bool keepGoing = writeBodyLine(output, prefix, wordCount, maxWords);
-  line = remainder;
-  return keepGoing;
-}
-
-bool writeBodyLine(File &output, const String &line, size_t &wordCount, size_t maxWords) {
-  const String normalizedLine = textdecode::normalizeDisplayText(line);
-  String token;
-  String pendingToken;
-  String outputLine;
-  token.reserve(32);
-  pendingToken.reserve(32);
-
-  auto flushOutputLine = [&]() {
-    if (outputLine.isEmpty()) {
-      return;
-    }
-    if (outputLine.startsWith("@")) {
-      output.print('@');
-    }
-    output.println(outputLine);
-    outputLine = "";
-  };
-
-  auto writeToken = [&](const String &value) -> bool {
-    if (value.isEmpty() || !hasReadableOrRhythmText(value)) {
-      return true;
-    }
-
-    if (reachedWordLimit(wordCount, maxWords)) {
-      flushOutputLine();
-      return false;
-    }
-
-    if (outputLine.length() + value.length() + 1 > kOutputWrapWidth) {
-      flushOutputLine();
-    }
-
-    if (!outputLine.isEmpty()) {
-      outputLine += ' ';
-    }
-    outputLine += value;
-    ++wordCount;
-    return true;
-  };
-
-  auto flushPending = [&]() -> bool {
-    if (pendingToken.isEmpty()) {
-      return true;
-    }
-    const bool ok = writeToken(pendingToken);
-    pendingToken = "";
-    return ok;
-  };
-
-  auto finishToken = [&](String value) -> bool {
-    value.trim();
-    if (value.isEmpty()) {
-      return true;
-    }
-
-    if (isEllipsisToken(value)) {
-      if (!pendingToken.isEmpty()) {
-        pendingToken += "...";
-      }
-      return true;
-    }
-
-    if (isHyphenToken(value)) {
-      return flushPending() && writeToken("-");
-    }
-
-    if (!flushPending()) {
-      return false;
-    }
-    pendingToken = value;
-    return true;
-  };
-
-  auto flushToken = [&]() -> bool {
-    if (token.isEmpty()) {
-      return true;
-    }
-    const bool ok = finishToken(token);
-    token = "";
-    return ok;
-  };
-
-  for (size_t i = 0; i < normalizedLine.length(); ++i) {
-    if ((i & 0x7F) == 0) {
-      serviceBackground();
-    }
-
-    const char c = normalizedLine[i];
-    if (isWhitespace(c)) {
-      if (!flushToken()) {
-        return false;
-      }
-      continue;
-    }
-
-    if (c == '-') {
-      if (isInlineWordHyphen(normalizedLine, i)) {
-        token += c;
-        continue;
-      }
-      if (!flushToken() || !finishToken("-")) {
-        return false;
-      }
-      while (i + 1 < normalizedLine.length() && normalizedLine[i + 1] == '-') {
-        ++i;
-      }
-      continue;
-    }
-
-    if (c == '.' && i + 2 < normalizedLine.length() && normalizedLine[i + 1] == '.' &&
-        normalizedLine[i + 2] == '.') {
-      token += "...";
-      i += 2;
-      while (i + 1 < normalizedLine.length() && normalizedLine[i + 1] == '.') {
-        ++i;
-      }
-      if (!flushToken()) {
-        return false;
-      }
-      continue;
-    }
-
-    token += c;
-  }
-
-  if (!flushToken() || !flushPending()) {
-    flushOutputLine();
-    return false;
-  }
-  flushOutputLine();
-
-  return !reachedWordLimit(wordCount, maxWords);
-}
-
-String tagNameFromTag(const String &tag, bool &closing, bool &selfClosing) {
-  closing = false;
-  selfClosing = false;
-
-  size_t position = 1;
-  while (position < tag.length() && isWhitespace(tag[position])) {
-    ++position;
-  }
-  if (position < tag.length() && tag[position] == '/') {
-    closing = true;
-    ++position;
-  }
-  while (position < tag.length() && isWhitespace(tag[position])) {
-    ++position;
-  }
-
-  const size_t start = position;
-  while (position < tag.length()) {
-    const char c = tag[position];
-    if (!(std::isalnum(static_cast<unsigned char>(c)) != 0 || c == ':' || c == '-' || c == '_')) {
-      break;
-    }
-    ++position;
-  }
-
-  String name = tag.substring(start, position);
-  name.toLowerCase();
-
-  for (int i = tag.length() - 1; i >= 0; --i) {
-    if (isWhitespace(tag[i]) || tag[i] == '>') {
-      continue;
-    }
-    selfClosing = tag[i] == '/';
-    break;
-  }
-
-  return name;
-}
-
-bool isSkipTag(const String &name) {
-  return name == "head" || name == "script" || name == "style" || name == "svg" ||
-         name == "math" || name == "nav";
-}
-
-bool isHeadingTag(const String &name) {
-  return name.length() == 2 && name[0] == 'h' && name[1] >= '1' && name[1] <= '6';
-}
-
-bool isBlockTag(const String &name) {
-  return name == "p" || name == "div" || name == "section" || name == "article" ||
-         name == "blockquote" || name == "li" || name == "tr" || name == "br" ||
-         name == "hr" || name == "dd" || name == "dt";
-}
-
-bool writeChapterMarker(File &output, const String &title, String &lastChapterTitle) {
-  String cleaned = textdecode::normalizeDisplayText(title);
-  cleaned.trim();
-  if (cleaned.isEmpty() || cleaned == lastChapterTitle) {
-    return true;
-  }
-
-  output.print("@chapter ");
-  output.println(cleaned);
-  lastChapterTitle = cleaned;
-  return true;
-}
-
-bool writeXhtmlAsRsvp(const String &html, File &output, size_t &wordCount, size_t maxWords,
-                      String &lastChapterTitle, const EpubConverter::Options &options,
-                      size_t itemIndex, size_t itemCount) {
-  String line;
-  String heading;
-  bool inHeading = false;
-  int skipDepth = 0;
-
-  line.reserve(160);
-  heading.reserve(80);
-
-  auto flushLine = [&]() -> bool {
-    line.trim();
-    if (line.isEmpty()) {
-      return true;
-    }
-    const bool keepGoing = writeBodyLine(output, line, wordCount, maxWords);
-    line = "";
-    return keepGoing;
-  };
-
-  for (size_t i = 0; i < html.length(); ++i) {
-    if ((i & 0x3FF) == 0) {
-      serviceBackground();
-    }
-    if ((i & 0x7FFF) == 0 && itemCount > 0 && html.length() > 0) {
-      const int contentPercent =
-          static_cast<int>((static_cast<uint32_t>(i) * 100UL) / html.length());
-      const int itemPercent =
-          static_cast<int>(((itemIndex * 100UL) + contentPercent) / itemCount);
-      const int progressPercent = 25 + ((itemPercent * 70) / 100);
-      const String detail = String(itemIndex + 1) + "/" + String(itemCount) + " " +
-                            String(wordCount) + " words";
-      reportProgress(options, "Parsing content", detail.c_str(), progressPercent);
-    }
-
-    const char c = html[i];
-
-    if (c == '<') {
-      if (startsWithAt(html, i, "<!--")) {
-        const int commentEnd = html.indexOf("-->", i + 4);
-        if (commentEnd < 0) {
-          break;
-        }
-        i = static_cast<size_t>(commentEnd) + 2;
-        continue;
-      }
-
-      const int tagEnd = html.indexOf('>', i + 1);
-      if (tagEnd < 0) {
-        break;
-      }
-
-      const String tag = html.substring(i, tagEnd + 1);
-      bool closing = false;
-      bool selfClosing = false;
-      const String name = tagNameFromTag(tag, closing, selfClosing);
-
-      if (name.isEmpty() || tag.startsWith("<!") || tag.startsWith("<?")) {
-        i = tagEnd;
-        continue;
-      }
-
-      if (skipDepth > 0) {
-        if (!closing && isSkipTag(name) && !selfClosing) {
-          ++skipDepth;
-        } else if (closing && isSkipTag(name)) {
-          --skipDepth;
-        }
-        i = tagEnd;
-        continue;
-      }
-
-      if (isSkipTag(name) && !closing && !selfClosing) {
-        if (!flushLine()) {
-          return false;
-        }
-        skipDepth = 1;
-        i = tagEnd;
-        continue;
-      }
-
-      if (isHeadingTag(name)) {
-        if (closing) {
-          inHeading = false;
-          const String cleanedHeading = plainTextFromXmlFragment(heading);
-          if (!writeChapterMarker(output, cleanedHeading, lastChapterTitle)) {
-            return false;
-          }
-          heading = "";
-        } else if (!selfClosing) {
-          if (!flushLine()) {
-            return false;
-          }
-          inHeading = true;
-          heading = "";
-        }
-        i = tagEnd;
-        continue;
-      }
-
-      if (isBlockTag(name) && (closing || name == "br" || name == "hr" || name == "li")) {
-        if (!flushLine()) {
-          return false;
-        }
-      } else if (isBlockTag(name)) {
-        appendNormalizedChar(line, ' ');
-      }
-
-      i = tagEnd;
-      continue;
-    }
-
-    String decodedText;
-    decodedText += c;
-    if (c == '&') {
-      const int entityEnd = html.indexOf(';', i + 1);
-      if (entityEnd > 0 && entityEnd - static_cast<int>(i) <= 12) {
-        decodedText = textdecode::decodedEntityText(html.substring(i + 1, entityEnd));
-        i = entityEnd;
-      }
-    }
-
-    if (skipDepth > 0) {
-      continue;
-    }
-    if (inHeading) {
-      for (size_t decodedIndex = 0; decodedIndex < decodedText.length(); ++decodedIndex) {
-        appendNormalizedChar(heading, decodedText[decodedIndex]);
-      }
-      continue;
-    }
-
-    for (size_t decodedIndex = 0; decodedIndex < decodedText.length(); ++decodedIndex) {
-      appendNormalizedChar(line, decodedText[decodedIndex]);
-    }
-    if (line.length() > kBufferedTextFlushThreshold) {
-      if (!flushWordAlignedPrefix(output, line, wordCount, maxWords)) {
-        return false;
-      }
-    }
-  }
-
-  return flushLine();
-}
-
-class XhtmlRsvpStreamWriter {
- public:
-  XhtmlRsvpStreamWriter(File &output, size_t &wordCount, size_t maxWords,
-                        String &lastChapterTitle)
-      : output_(output),
-        wordCount_(wordCount),
-        maxWords_(maxWords),
-        lastChapterTitle_(lastChapterTitle) {
-    line_.reserve(160);
-    heading_.reserve(80);
-    tag_.reserve(96);
-    entity_.reserve(16);
-  }
-
-  bool write(const uint8_t *data, size_t length) {
-    for (size_t i = 0; i < length; ++i) {
-      if ((i & 0x3FF) == 0) {
-        serviceBackground();
-      }
-      if (!processChar(static_cast<char>(data[i]))) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  bool finish() {
-    mode_ = Mode::Text;
-    return flushLine();
-  }
-
-  bool reachedWordLimit() const { return reachedWordLimit_; }
-
- private:
-  enum class Mode {
-    Text,
-    Tag,
-    Entity,
-    Comment,
-  };
-
-  bool flushLine() {
-    line_.trim();
-    if (line_.isEmpty()) {
-      return true;
-    }
-
-    const bool keepGoing = writeBodyLine(output_, line_, wordCount_, maxWords_);
-    line_ = "";
-    if (!keepGoing) {
-      reachedWordLimit_ = true;
-    }
-    return keepGoing;
-  }
-
-  void appendToActiveText(char c) {
-    if (inHeading_) {
-      appendNormalizedChar(heading_, c);
-      return;
-    }
-
-    appendNormalizedChar(line_, c);
-  }
-
-  bool processDecodedText(char c) {
-    if (skipDepth_ > 0) {
-      return true;
-    }
-
-    appendToActiveText(c);
-    if (!inHeading_ && line_.length() > kBufferedTextFlushThreshold) {
-      return flushWordAlignedPrefix(output_, line_, wordCount_, maxWords_);
-    }
-
-    return true;
-  }
-
-  bool processTextChar(char c) {
-    if (c == '<') {
-      tag_ = "<";
-      mode_ = Mode::Tag;
-      return true;
-    }
-
-    if (c == '&') {
-      if (skipDepth_ > 0) {
-        return true;
-      }
-      entity_ = "";
-      mode_ = Mode::Entity;
-      return true;
-    }
-
-    return processDecodedText(c);
-  }
-
-  bool processTag(const String &tag) {
-    bool closing = false;
-    bool selfClosing = false;
-    const String name = tagNameFromTag(tag, closing, selfClosing);
-
-    if (name.isEmpty() || tag.startsWith("<!") || tag.startsWith("<?")) {
-      return true;
-    }
-
-    if (skipDepth_ > 0) {
-      if (!closing && isSkipTag(name) && !selfClosing) {
-        ++skipDepth_;
-      } else if (closing && isSkipTag(name)) {
-        --skipDepth_;
-      }
-      return true;
-    }
-
-    if (isSkipTag(name) && !closing && !selfClosing) {
-      if (!flushLine()) {
-        return false;
-      }
-      skipDepth_ = 1;
-      return true;
-    }
-
-    if (isHeadingTag(name)) {
-      if (closing) {
-        inHeading_ = false;
-        const String cleanedHeading = plainTextFromXmlFragment(heading_);
-        if (!writeChapterMarker(output_, cleanedHeading, lastChapterTitle_)) {
-          return false;
-        }
-        heading_ = "";
-      } else if (!selfClosing) {
-        if (!flushLine()) {
-          return false;
-        }
-        inHeading_ = true;
-        heading_ = "";
-      }
-      return true;
-    }
-
-    if (isBlockTag(name) && (closing || name == "br" || name == "hr" || name == "li")) {
-      return flushLine();
-    }
-    if (isBlockTag(name)) {
-      appendNormalizedChar(line_, ' ');
-    }
-
-    return true;
-  }
-
-  bool processEntityChar(char c) {
-    if (c == ';') {
-      mode_ = Mode::Text;
-      const String decoded = textdecode::decodedEntityText(entity_);
-      for (size_t decodedIndex = 0; decodedIndex < decoded.length(); ++decodedIndex) {
-        if (!processDecodedText(decoded[decodedIndex])) {
-          return false;
-        }
-      }
-      return true;
-    }
-
-    if (c == '<') {
-      mode_ = Mode::Text;
-      if (!processDecodedText(' ')) {
-        return false;
-      }
-      return processTextChar(c);
-    }
-
-    if (entity_.length() >= kMaxEntityChars || isWhitespace(c)) {
-      mode_ = Mode::Text;
-      return processDecodedText(' ');
-    }
-
-    entity_ += c;
-    return true;
-  }
-
-  bool processCommentChar(char c) {
-    commentTail_ += c;
-    if (commentTail_.length() > 3) {
-      commentTail_.remove(0, commentTail_.length() - 3);
-    }
-
-    if (commentTail_ == "-->") {
-      commentTail_ = "";
-      mode_ = Mode::Text;
-    }
-
-    return true;
-  }
-
-  bool processChar(char c) {
-    switch (mode_) {
-      case Mode::Text:
-        return processTextChar(c);
-      case Mode::Entity:
-        return processEntityChar(c);
-      case Mode::Comment:
-        return processCommentChar(c);
-      case Mode::Tag:
-        tag_ += c;
-        if (tag_ == "<!--") {
-          tag_ = "";
-          commentTail_ = "";
-          mode_ = Mode::Comment;
-          return true;
-        }
-        if (tag_.length() > kMaxTagChars) {
-          tag_ = "";
-          mode_ = Mode::Text;
-          return processDecodedText(' ');
-        }
-        if (c == '>') {
-          const String completedTag = tag_;
-          tag_ = "";
-          mode_ = Mode::Text;
-          return processTag(completedTag);
-        }
-        return true;
-    }
-
-    return true;
-  }
-
-  File &output_;
-  size_t &wordCount_;
-  size_t maxWords_;
-  String &lastChapterTitle_;
-  String line_;
-  String heading_;
-  String tag_;
-  String entity_;
-  String commentTail_;
-  Mode mode_ = Mode::Text;
-  bool inHeading_ = false;
-  bool reachedWordLimit_ = false;
-  int skipDepth_ = 0;
-};
-
-bool isContentDocument(const ManifestItem &item) {
-  const String mediaType = toLowerCopy(item.mediaType);
-  const String path = toLowerCopy(item.path);
-  return mediaType == "application/xhtml+xml" || mediaType == "text/html" ||
-         path.endsWith(".xhtml") || path.endsWith(".html") || path.endsWith(".htm");
-}
-
-String parseRootfilePath(const String &containerXml) {
-  int position = 0;
-  while (position >= 0) {
-    position = containerXml.indexOf("<rootfile", position);
-    if (position < 0) {
-      break;
-    }
-
-    const int end = containerXml.indexOf('>', position);
-    if (end < 0) {
-      break;
-    }
-
-    const String tag = containerXml.substring(position, end + 1);
-    const String path = attributeValue(tag, "full-path");
-    if (!path.isEmpty()) {
-      return normalizeZipName(path);
-    }
-
-    position = end + 1;
-  }
-
-  return "";
-}
-
-String parseDcMetadata(const String &opfXml, const char *tagName) {
-  const String openTag = String("<dc:") + tagName;
-  const String closeTag = String("</dc:") + tagName;
-  int position = 0;
-  while (position >= 0) {
-    position = opfXml.indexOf(openTag, position);
-    if (position < 0) {
-      break;
-    }
-
-    const int openEnd = opfXml.indexOf('>', position);
-    if (openEnd < 0) {
-      break;
-    }
-    const int closeStart = opfXml.indexOf(closeTag, openEnd + 1);
-    if (closeStart < 0) {
-      break;
-    }
-
-    const String value = plainTextFromXmlFragment(opfXml.substring(openEnd + 1, closeStart));
-    if (!value.isEmpty()) {
-      return value;
-    }
-
-    position = closeStart + 1;
-  }
-
-  return "";
-}
-
-String parseBookTitle(const String &opfXml) { return parseDcMetadata(opfXml, "title"); }
-
-String parseBookAuthor(const String &opfXml) { return parseDcMetadata(opfXml, "creator"); }
-
-std::vector<ManifestItem> parseManifestItems(const String &opfXml, const String &opfBaseDir) {
-  std::vector<ManifestItem> items;
-  int position = 0;
-
-  while (position >= 0) {
-    position = opfXml.indexOf("<item", position);
-    if (position < 0) {
-      break;
-    }
-
-    const int afterName = position + 5;
-    if (static_cast<size_t>(afterName) < opfXml.length() &&
-        !isWhitespace(opfXml[afterName]) && opfXml[afterName] != '/' &&
-        opfXml[afterName] != '>') {
-      position = afterName;
-      continue;
-    }
-
-    const int end = opfXml.indexOf('>', position);
-    if (end < 0) {
-      break;
-    }
-
-    const String tag = opfXml.substring(position, end + 1);
-    ManifestItem item;
-    item.id = attributeValue(tag, "id");
-    item.path = resolveZipPath(opfBaseDir, attributeValue(tag, "href"));
-    item.mediaType = attributeValue(tag, "media-type");
-
-    if (!item.id.isEmpty() && !item.path.isEmpty()) {
-      items.push_back(item);
-    }
-
-    position = end + 1;
-  }
-
-  return items;
-}
-
-std::vector<String> parseSpineIds(const String &opfXml) {
-  std::vector<String> ids;
-  int position = 0;
-
-  while (position >= 0) {
-    position = opfXml.indexOf("<itemref", position);
-    if (position < 0) {
-      break;
-    }
-
-    const int end = opfXml.indexOf('>', position);
-    if (end < 0) {
-      break;
-    }
-
-    const String tag = opfXml.substring(position, end + 1);
-    const String idref = attributeValue(tag, "idref");
-    if (!idref.isEmpty()) {
-      ids.push_back(idref);
-    }
-
-    position = end + 1;
-  }
-
-  return ids;
-}
-
-const ManifestItem *findManifestItem(const std::vector<ManifestItem> &items, const String &id) {
-  for (size_t i = 0; i < items.size(); ++i) {
-    if (items[i].id == id) {
-      return &items[i];
-    }
-  }
-  return nullptr;
 }
 
 void reportContentProgress(const EpubConverter::Options &options, size_t itemIndex,
@@ -1246,7 +175,7 @@ class ZipArchive {
   }
 
   const ZipEntry *find(const String &name) const {
-    const String normalized = normalizeZipName(name);
+    const String normalized = epubconvert::normalizeZipName(name);
     for (size_t i = 0; i < entries_.size(); ++i) {
       if (entries_[i].name == normalized) {
         return &entries_[i];
@@ -1417,7 +346,7 @@ class ZipArchive {
       nameBuffer[fileNameLength] = '\0';
 
       ZipEntry entry;
-      entry.name = normalizeZipName(String(nameBuffer));
+      entry.name = epubconvert::normalizeZipName(String(nameBuffer));
       entry.method = readLe16(header + 10);
       entry.flags = readLe16(header + 8);
       entry.compressedSize = readLe32(header + 20);
@@ -1689,7 +618,11 @@ class ZipArchive {
       return ContentExtractStatus::Failed;
     }
 
-    XhtmlRsvpStreamWriter writer(output, wordCount, maxWords, lastChapterTitle);
+    epubconvert::RsvpWriter writer(
+        [&output](const char *data, size_t length) {
+          output.write(reinterpret_cast<const uint8_t *>(data), length);
+        },
+        wordCount, maxWords, lastChapterTitle, serviceBackground);
     uint32_t totalOutputBytes = 0;
     uint32_t lastProgressBytes = 0;
 
@@ -1876,7 +809,7 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
   Serial.printf("[epub] container.xml loaded: %u chars\n",
                 static_cast<unsigned int>(containerXml.length()));
 
-  const String opfPath = parseRootfilePath(containerXml);
+  const String opfPath = epubconvert::parseRootfilePath(containerXml);
   if (opfPath.isEmpty()) {
     Serial.println("[epub] EPUB rootfile path not found");
     zip.close();
@@ -1894,9 +827,10 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
   }
   Serial.printf("[epub] OPF loaded: %u chars\n", static_cast<unsigned int>(opfXml.length()));
 
-  const String opfBaseDir = directoryForPath(opfPath);
-  const std::vector<ManifestItem> manifest = parseManifestItems(opfXml, opfBaseDir);
-  const std::vector<String> spineIds = parseSpineIds(opfXml);
+  const String opfBaseDir = epubconvert::directoryForPath(opfPath);
+  const std::vector<epubconvert::ManifestItem> manifest =
+      epubconvert::parseManifestItems(opfXml, opfBaseDir);
+  const std::vector<String> spineIds = epubconvert::parseSpineIds(opfXml);
   std::vector<String> readingOrder;
   readingOrder.reserve(spineIds.size());
   Serial.printf("[epub] Package parsed: manifest=%u spine=%u base=%s\n",
@@ -1906,15 +840,15 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
   reportProgress(options, "Opening EPUB", "Building reading order", 20);
   for (size_t i = 0; i < spineIds.size(); ++i) {
     serviceBackground();
-    const ManifestItem *item = findManifestItem(manifest, spineIds[i]);
-    if (item != nullptr && isContentDocument(*item)) {
+    const epubconvert::ManifestItem *item = epubconvert::findManifestItem(manifest, spineIds[i]);
+    if (item != nullptr && epubconvert::isContentDocument(*item)) {
       readingOrder.push_back(item->path);
     }
   }
 
   if (readingOrder.empty()) {
     for (size_t i = 0; i < manifest.size(); ++i) {
-      if (isContentDocument(manifest[i])) {
+      if (epubconvert::isContentDocument(manifest[i])) {
         readingOrder.push_back(manifest[i].path);
       }
     }
@@ -1939,29 +873,23 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
     return false;
   }
 
-  String title = parseBookTitle(opfXml);
+  String title = epubconvert::parseBookTitle(opfXml);
   if (title.isEmpty()) {
-    title = basenameWithoutExtension(epubPath);
+    title = epubconvert::basenameWithoutExtension(epubPath);
   }
-  const String author = parseBookAuthor(opfXml);
+  const String author = epubconvert::parseBookAuthor(opfXml);
 
-  output.println("@rsvp 1");
-  output.print("@converter ");
-  output.println(kConverterVersion);
-  output.print("@title ");
-  output.println(title);
-  if (!author.isEmpty()) {
-    output.print("@author ");
-    output.println(author);
-  }
-  output.print("@source ");
-  output.println(epubPath);
-  output.println();
+  epubconvert::writeRsvpHeader(
+      [&output](const char *data, size_t length) {
+        output.write(reinterpret_cast<const uint8_t *>(data), length);
+      },
+      kConverterVersion, title, author, epubPath);
 
   size_t wordCount = 0;
   String lastChapterTitle;
 
-  for (size_t i = 0; i < readingOrder.size() && !reachedWordLimit(wordCount, options.maxWords);
+  for (size_t i = 0;
+       i < readingOrder.size() && !epubconvert::reachedWordLimit(wordCount, options.maxWords);
        ++i) {
     serviceBackground();
     const int startPercent = 25 + static_cast<int>((i * 70UL) / readingOrder.size());

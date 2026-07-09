@@ -11,6 +11,7 @@
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 #include "stats/StatsHistory.h"
+#include "text/JsonText.h"
 
 #ifndef RSVP_FIRMWARE_VERSION
 #define RSVP_FIRMWARE_VERSION "dev"
@@ -346,190 +347,10 @@ int enumValue(const String &value, const char *const *labels, size_t count) {
   return -1;
 }
 
-bool findJsonKey(const String &body, const char *key, int &colonIndex) {
-  const String needle = String("\"") + key + "\"";
-  const int keyIndex = body.indexOf(needle);
-  if (keyIndex < 0) {
-    return false;
-  }
-  colonIndex = body.indexOf(':', keyIndex + needle.length());
-  return colonIndex >= 0;
-}
-
-int skipJsonWhitespace(const String &body, int index) {
-  while (index < static_cast<int>(body.length()) &&
-         isspace(static_cast<unsigned char>(body[index]))) {
-    ++index;
-  }
-  return index;
-}
-
-bool readJsonInt(const String &body, const char *key, int &value) {
-  int colonIndex = -1;
-  if (!findJsonKey(body, key, colonIndex)) {
-    return false;
-  }
-  int index = skipJsonWhitespace(body, colonIndex + 1);
-  bool negative = false;
-  if (index < static_cast<int>(body.length()) && body[index] == '-') {
-    negative = true;
-    ++index;
-  }
-  if (index >= static_cast<int>(body.length()) || !isdigit(static_cast<unsigned char>(body[index]))) {
-    return false;
-  }
-  int result = 0;
-  while (index < static_cast<int>(body.length()) &&
-         isdigit(static_cast<unsigned char>(body[index]))) {
-    result = result * 10 + (body[index] - '0');
-    ++index;
-  }
-  value = negative ? -result : result;
-  return true;
-}
-
-// 64-bit variant for values that overflow int (e.g. epoch milliseconds).
-bool readJsonInt64(const String &body, const char *key, int64_t &value) {
-  int colonIndex = -1;
-  if (!findJsonKey(body, key, colonIndex)) {
-    return false;
-  }
-  int index = skipJsonWhitespace(body, colonIndex + 1);
-  bool negative = false;
-  if (index < static_cast<int>(body.length()) && body[index] == '-') {
-    negative = true;
-    ++index;
-  }
-  if (index >= static_cast<int>(body.length()) ||
-      !isdigit(static_cast<unsigned char>(body[index]))) {
-    return false;
-  }
-  int64_t result = 0;
-  while (index < static_cast<int>(body.length()) &&
-         isdigit(static_cast<unsigned char>(body[index]))) {
-    result = result * 10 + static_cast<int64_t>(body[index] - '0');
-    ++index;
-  }
-  value = negative ? -result : result;
-  return true;
-}
-
-bool readJsonBool(const String &body, const char *key, bool &value) {
-  int colonIndex = -1;
-  if (!findJsonKey(body, key, colonIndex)) {
-    return false;
-  }
-  const int index = skipJsonWhitespace(body, colonIndex + 1);
-  if (body.substring(index, index + 4) == "true") {
-    value = true;
-    return true;
-  }
-  if (body.substring(index, index + 5) == "false") {
-    value = false;
-    return true;
-  }
-  return false;
-}
-
-bool readJsonString(const String &body, const char *key, String &value) {
-  int colonIndex = -1;
-  if (!findJsonKey(body, key, colonIndex)) {
-    return false;
-  }
-  int index = skipJsonWhitespace(body, colonIndex + 1);
-  if (index >= static_cast<int>(body.length()) || body[index] != '"') {
-    return false;
-  }
-  ++index;
-  String result;
-  while (index < static_cast<int>(body.length())) {
-    const char c = body[index++];
-    if (c == '"') {
-      value = result;
-      return true;
-    }
-    if (c == '\\' && index < static_cast<int>(body.length())) {
-      const char escaped = body[index++];
-      switch (escaped) {
-        case '"':
-        case '\\':
-        case '/':
-          result += escaped;
-          break;
-        case 'n':
-          result += '\n';
-          break;
-        case 'r':
-          result += '\r';
-          break;
-        case 't':
-          result += '\t';
-          break;
-        default:
-          result += escaped;
-          break;
-      }
-    } else {
-      result += c;
-    }
-  }
-  return false;
-}
-
 bool isHttpUrl(String value) {
   value.trim();
   value.toLowerCase();
   return value.startsWith("http://") || value.startsWith("https://");
-}
-
-bool nextJsonArrayString(const String &body, int &index, String &value) {
-  index = skipJsonWhitespace(body, index);
-  if (index >= static_cast<int>(body.length())) {
-    return false;
-  }
-  if (body[index] == ',') {
-    index = skipJsonWhitespace(body, index + 1);
-  }
-  if (index >= static_cast<int>(body.length()) || body[index] == ']') {
-    return false;
-  }
-  if (body[index] != '"') {
-    return false;
-  }
-  ++index;
-  String result;
-  while (index < static_cast<int>(body.length())) {
-    const char c = body[index++];
-    if (c == '"') {
-      value = result;
-      return true;
-    }
-    if (c == '\\' && index < static_cast<int>(body.length())) {
-      const char escaped = body[index++];
-      switch (escaped) {
-        case '"':
-        case '\\':
-        case '/':
-          result += escaped;
-          break;
-        case 'n':
-          result += '\n';
-          break;
-        case 'r':
-          result += '\r';
-          break;
-        case 't':
-          result += '\t';
-          break;
-        default:
-          result += escaped;
-          break;
-      }
-    } else {
-      result += c;
-    }
-  }
-  return false;
 }
 
 String rsvpMetadataValueFromLine(const String &line, const char *directive, bool &pastDirectives) {
@@ -791,13 +612,13 @@ void CompanionSyncManager::handleInfo() {
   const String otaLastResult = preferences_.getString(kPrefOtaLastResult, "");
   const String body = String("{") + "\"name\":\"RSVP Nano\"," +
                       "\"mode\":\"" + mode + "\"," +
-                      "\"baseUrl\":\"" + jsonEscape(baseUrl()) + "\"," +
-                      "\"networkSsid\":\"" + jsonEscape(networkSsid_) + "\"," +
+                      "\"baseUrl\":\"" + jsontext::escape(baseUrl()) + "\"," +
+                      "\"networkSsid\":\"" + jsontext::escape(networkSsid_) + "\"," +
                       "\"pairingCode\":\"" + pairingCode_ + "\"," +
-                      "\"firmwareVersion\":\"" + jsonEscape(RSVP_FIRMWARE_VERSION) + "\"," +
+                      "\"firmwareVersion\":\"" + jsontext::escape(RSVP_FIRMWARE_VERSION) + "\"," +
                       "\"otaAutoCheck\":" +
                       (preferences_.getBool(kPrefOtaAuto, false) ? "true" : "false") + "," +
-                      "\"otaLastResult\":\"" + jsonEscape(otaLastResult) + "\"," +
+                      "\"otaLastResult\":\"" + jsontext::escape(otaLastResult) + "\"," +
                       "\"uploadPath\":\"/api/books\"" + "}";
   server_.send(200, "application/json", body);
 }
@@ -835,9 +656,9 @@ void CompanionSyncManager::handleBooksList() {
             body += ",";
           }
           first = false;
-          body += "{\"name\":\"" + jsonEscape(relativeLibraryName(path)) + "\",\"category\":\"" +
+          body += "{\"name\":\"" + jsontext::escape(relativeLibraryName(path)) + "\",\"category\":\"" +
                   libraryCategoryForPath(path) + "\",\"title\":\"" +
-                  jsonEscape(metadata.title) + "\",\"author\":\"" + jsonEscape(metadata.author) +
+                  jsontext::escape(metadata.title) + "\",\"author\":\"" + jsontext::escape(metadata.author) +
                   "\",\"bytes\":" +
                   String(static_cast<uint32_t>(entry.size()));
           if (hasProgress) {
@@ -886,7 +707,7 @@ void CompanionSyncManager::handleSettings() {
   String error;
   if (!applySettingsJson(body, error)) {
     server_.send(400, "application/json",
-                 String("{\"ok\":false,\"error\":\"") + jsonEscape(error) + "\"}");
+                 String("{\"ok\":false,\"error\":\"") + jsontext::escape(error) + "\"}");
     return;
   }
 
@@ -916,7 +737,7 @@ void CompanionSyncManager::handleWifi() {
   String error;
   if (!applyWifiJson(server_.arg("plain"), error)) {
     server_.send(400, "application/json",
-                 String("{\"ok\":false,\"error\":\"") + jsonEscape(error) + "\"}");
+                 String("{\"ok\":false,\"error\":\"") + jsontext::escape(error) + "\"}");
     return;
   }
 
@@ -939,7 +760,7 @@ void CompanionSyncManager::handleRssFeeds() {
   String error;
   if (!writeRssFeedsJson(server_.arg("plain"), error)) {
     server_.send(400, "application/json",
-                 String("{\"ok\":false,\"error\":\"") + jsonEscape(error) + "\"}");
+                 String("{\"ok\":false,\"error\":\"") + jsontext::escape(error) + "\"}");
     return;
   }
 
@@ -952,13 +773,13 @@ void CompanionSyncManager::handleBooks() {
   finishUpload(uploadError_.isEmpty());
   if (!uploadError_.isEmpty()) {
     server_.send(400, "application/json",
-                 String("{\"ok\":false,\"error\":\"") + jsonEscape(uploadError_) + "\"}");
+                 String("{\"ok\":false,\"error\":\"") + jsontext::escape(uploadError_) + "\"}");
     uploadError_ = "";
     return;
   }
 
   server_.send(201, "application/json",
-               String("{\"ok\":true,\"path\":\"") + jsonEscape(uploadFinalPath_) + "\"}");
+               String("{\"ok\":true,\"path\":\"") + jsontext::escape(uploadFinalPath_) + "\"}");
   uploadFinalPath_ = "";
 }
 
@@ -1044,7 +865,7 @@ void CompanionSyncManager::handleBookDelete() {
   statusLine2_ = filename;
   Serial.printf("[sync] deleted %s\n", path.c_str());
   server_.send(200, "application/json",
-               String("{\"ok\":true,\"path\":\"") + jsonEscape(path) + "\"}");
+               String("{\"ok\":true,\"path\":\"") + jsontext::escape(path) + "\"}");
 }
 
 void CompanionSyncManager::handleBookFinished() {
@@ -1171,13 +992,13 @@ void CompanionSyncManager::handleTime() {
   // this namespace. tz is the standard UTC-12..UTC+14 span.
   const String body = server_.arg("plain");
   int64_t epochMs = 0;
-  if (!readJsonInt64(body, "epochMs", epochMs) || epochMs <= 0) {
+  if (!jsontext::readInt64(body, "epochMs", epochMs) || epochMs <= 0) {
     server_.send(400, "application/json",
                  "{\"ok\":false,\"error\":\"epochMs (browser Date.now()) required\"}");
     return;
   }
   int tzOffsetMinutes = 0;
-  if (readJsonInt(body, "tzOffsetMinutes", tzOffsetMinutes)) {
+  if (jsontext::readInt(body, "tzOffsetMinutes", tzOffsetMinutes)) {
     tzOffsetMinutes = clampInt(tzOffsetMinutes, kTimezoneOffsetMinRange.min,
                                kTimezoneOffsetMinRange.max);
   }
@@ -1217,10 +1038,10 @@ void CompanionSyncManager::handleQuotes() {
       body += ',';
     }
     const quotes::Quote &q = records[i];
-    body += "{\"bookPath\":\"" + jsonEscape(q.bookPath) + "\",\"bookTitle\":\"" +
-            jsonEscape(q.bookTitle) + "\",\"wordIndex\":" +
+    body += "{\"bookPath\":\"" + jsontext::escape(q.bookPath) + "\",\"bookTitle\":\"" +
+            jsontext::escape(q.bookTitle) + "\",\"wordIndex\":" +
             String(static_cast<unsigned int>(q.wordIndex)) + ",\"sentence\":\"" +
-            jsonEscape(q.sentence) + "\"}";
+            jsontext::escape(q.sentence) + "\"}";
   }
   body += "]}";
   server_.send(200, "application/json", body);
@@ -1481,14 +1302,14 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
   bool boolValue = false;
   String stringValue;
 
-  if (readJsonInt(body, "wpm", intValue)) {
+  if (jsontext::readInt(body, "wpm", intValue)) {
     if (!inRange(intValue, kWpmRange)) {
       error = "wpm must be between 10 and 1000";
       return false;
     }
     preferences_.putUShort(kPrefWpm, static_cast<uint16_t>(intValue));
   }
-  if (readJsonString(body, "readerMode", stringValue)) {
+  if (jsontext::readString(body, "readerMode", stringValue)) {
     const int value = enumValue(stringValue, readerModeLabels, 2);
     if (value < 0) {
       error = "readerMode must be rsvp or scroll";
@@ -1496,7 +1317,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefReaderMode, static_cast<uint8_t>(value));
   }
-  if (readJsonString(body, "pauseMode", stringValue)) {
+  if (jsontext::readString(body, "pauseMode", stringValue)) {
     const int value = enumValue(stringValue, pauseModeLabels, 2);
     if (value < 0) {
       error = "pauseMode must be sentence_end or instant";
@@ -1505,41 +1326,41 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putUChar(kPrefPauseMode, static_cast<uint8_t>(value));
   }
   preferences_.putBool(kPrefAccurateTime, true);
-  if (readJsonInt(body, "longWordMs", intValue)) {
+  if (jsontext::readInt(body, "longWordMs", intValue)) {
     if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "longWordMs must be between 0 and 600";
       return false;
     }
     preferences_.putUShort(kPrefPacingLongMs, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "complexWordMs", intValue)) {
+  if (jsontext::readInt(body, "complexWordMs", intValue)) {
     if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "complexWordMs must be between 0 and 600";
       return false;
     }
     preferences_.putUShort(kPrefPacingComplexMs, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "punctuationMs", intValue)) {
+  if (jsontext::readInt(body, "punctuationMs", intValue)) {
     if (!inRange(intValue, kPacingDelayMsRange)) {
       error = "punctuationMs must be between 0 and 600";
       return false;
     }
     preferences_.putUShort(kPrefPacingPunctuationMs, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "brightnessIndex", intValue)) {
+  if (jsontext::readInt(body, "brightnessIndex", intValue)) {
     if (!inRange(intValue, kBrightnessIndexRange)) {
       error = "brightnessIndex must be between 0 and 4";
       return false;
     }
     preferences_.putUChar(kPrefBrightness, static_cast<uint8_t>(intValue));
   }
-  if (readJsonBool(body, "darkMode", boolValue)) {
+  if (jsontext::readBool(body, "darkMode", boolValue)) {
     preferences_.putBool(kPrefDarkMode, boolValue);
   }
-  if (readJsonBool(body, "nightMode", boolValue)) {
+  if (jsontext::readBool(body, "nightMode", boolValue)) {
     preferences_.putBool(kPrefNightMode, boolValue);
   }
-  if (readJsonString(body, "handedness", stringValue)) {
+  if (jsontext::readString(body, "handedness", stringValue)) {
     const int value = enumValue(stringValue, handednessLabels, 2);
     if (value < 0) {
       error = "handedness must be right or left";
@@ -1547,7 +1368,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefHandedness, static_cast<uint8_t>(value));
   }
-  if (readJsonString(body, "footerMetric", stringValue)) {
+  if (jsontext::readString(body, "footerMetric", stringValue)) {
     const int value = enumValue(stringValue, footerMetricLabels, 3);
     if (value < 0) {
       error = "footerMetric must be percentage, chapter_time, or book_time";
@@ -1555,7 +1376,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefFooterMetricMode, static_cast<uint8_t>(value));
   }
-  if (readJsonString(body, "batteryLabel", stringValue)) {
+  if (jsontext::readString(body, "batteryLabel", stringValue)) {
     const int value = enumValue(stringValue, batteryLabelLabels, 3);
     if (value < 0) {
       error = "batteryLabel must be percent, time_remaining, or voltage";
@@ -1563,36 +1384,36 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefBatteryLabelMode, static_cast<uint8_t>(value));
   }
-  if (readJsonBool(body, "readingBattery", boolValue)) {
+  if (jsontext::readBool(body, "readingBattery", boolValue)) {
     preferences_.putBool(kPrefReaderBatteryVisible, boolValue);
   }
-  if (readJsonBool(body, "readingChapter", boolValue)) {
+  if (jsontext::readBool(body, "readingChapter", boolValue)) {
     preferences_.putBool(kPrefReaderChapterVisible, boolValue);
   }
-  if (readJsonBool(body, "readingProgress", boolValue)) {
+  if (jsontext::readBool(body, "readingProgress", boolValue)) {
     preferences_.putBool(kPrefReaderProgressVisible, boolValue);
   }
-  if (readJsonInt(body, "language", intValue)) {
+  if (jsontext::readInt(body, "language", intValue)) {
     if (intValue < 0 || intValue > kMaxUiLanguage) {
       error = "language is out of range";
       return false;
     }
     preferences_.putUChar(kPrefUiLanguage, static_cast<uint8_t>(intValue));
   }
-  if (readJsonBool(body, "phantomWords", boolValue)) {
+  if (jsontext::readBool(body, "phantomWords", boolValue)) {
     preferences_.putBool(kPrefPhantomWords, boolValue);
   }
-  if (readJsonBool(body, "imuShortcuts", boolValue)) {
+  if (jsontext::readBool(body, "imuShortcuts", boolValue)) {
     preferences_.putBool(kPrefImuShortcuts, boolValue);
   }
-  if (readJsonInt(body, "fontSizeIndex", intValue)) {
+  if (jsontext::readInt(body, "fontSizeIndex", intValue)) {
     if (!inRange(intValue, kReaderFontSizeRange)) {
       error = "fontSizeIndex must be between 0 and 2";
       return false;
     }
     preferences_.putUChar(kPrefReaderFontSize, static_cast<uint8_t>(intValue));
   }
-  if (readJsonInt(body, "idleStandbyMinutes", intValue)) {
+  if (jsontext::readInt(body, "idleStandbyMinutes", intValue)) {
     if (intValue != 0 && intValue != 1 && intValue != 2 && intValue != 5 &&
         intValue != 10 && intValue != 15) {
       error = "idleStandbyMinutes must be 0, 1, 2, 5, 10, or 15";
@@ -1600,52 +1421,52 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefIdleStandbyMin, static_cast<uint8_t>(intValue));
   }
-  if (readJsonInt(body, "dailyGoalWords", intValue)) {
+  if (jsontext::readInt(body, "dailyGoalWords", intValue)) {
     if (!inRange(intValue, kDailyGoalRange)) {
       error = "dailyGoalWords must be between 100 and 100000";
       return false;
     }
     preferences_.putUInt(kPrefStatsGoal, static_cast<uint32_t>(intValue));
   }
-  if (readJsonBool(body, "audioMuted", boolValue)) {
+  if (jsontext::readBool(body, "audioMuted", boolValue)) {
     preferences_.putBool(kPrefAudioMuted, boolValue);
   }
-  if (readJsonInt(body, "audioVolume", intValue)) {
+  if (jsontext::readInt(body, "audioVolume", intValue)) {
     if (!inRange(intValue, kAudioVolumeRange)) {
       error = "audioVolume must be between 0 and 100";
       return false;
     }
     preferences_.putUChar(kPrefAudioVolume, static_cast<uint8_t>(intValue));
   }
-  if (readJsonInt(body, "swipeThresholdPx", intValue)) {
+  if (jsontext::readInt(body, "swipeThresholdPx", intValue)) {
     if (!inRange(intValue, kGestureSwipePxRange)) {
       error = "swipeThresholdPx must be between 12 and 120";
       return false;
     }
     preferences_.putUShort(kPrefGestureSwipePx, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "tapSlopPx", intValue)) {
+  if (jsontext::readInt(body, "tapSlopPx", intValue)) {
     if (!inRange(intValue, kGestureTapPxRange)) {
       error = "tapSlopPx must be between 8 and 80";
       return false;
     }
     preferences_.putUShort(kPrefGestureTapPx, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "scrubStepPx", intValue)) {
+  if (jsontext::readInt(body, "scrubStepPx", intValue)) {
     if (!inRange(intValue, kGestureScrubPxRange)) {
       error = "scrubStepPx must be between 1 and 120";
       return false;
     }
     preferences_.putUShort(kPrefGestureScrubPx, static_cast<uint16_t>(intValue));
   }
-  if (readJsonInt(body, "playHoldMs", intValue)) {
+  if (jsontext::readInt(body, "playHoldMs", intValue)) {
     if (!inRange(intValue, kGestureHoldMsRange)) {
       error = "playHoldMs must be between 120 and 1500";
       return false;
     }
     preferences_.putUInt(kPrefGestureHoldMs, static_cast<uint32_t>(intValue));
   }
-  if (readJsonString(body, "typeface", stringValue)) {
+  if (jsontext::readString(body, "typeface", stringValue)) {
     const int value = enumValue(stringValue, typefaceLabels, 3);
     if (value < 0) {
       error = "typeface must be standard, open_dyslexic, or atkinson";
@@ -1653,31 +1474,31 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     }
     preferences_.putUChar(kPrefReaderTypeface, static_cast<uint8_t>(value));
   }
-  if (readJsonBool(body, "focusHighlight", boolValue)) {
+  if (jsontext::readBool(body, "focusHighlight", boolValue)) {
     preferences_.putBool(kPrefTypographyFocusHighlight, boolValue);
   }
-  if (readJsonInt(body, "tracking", intValue)) {
+  if (jsontext::readInt(body, "tracking", intValue)) {
     if (!inRange(intValue, kTypographyTrackingRange)) {
       error = "tracking is out of range";
       return false;
     }
     preferences_.putChar(kPrefTypographyTracking, static_cast<int8_t>(intValue));
   }
-  if (readJsonInt(body, "anchorPercent", intValue)) {
+  if (jsontext::readInt(body, "anchorPercent", intValue)) {
     if (!inRange(intValue, kTypographyAnchorRange)) {
       error = "anchorPercent is out of range";
       return false;
     }
     preferences_.putUChar(kPrefTypographyAnchor, static_cast<uint8_t>(intValue));
   }
-  if (readJsonInt(body, "guideWidth", intValue)) {
+  if (jsontext::readInt(body, "guideWidth", intValue)) {
     if (!inRange(intValue, kTypographyGuideWidthRange)) {
       error = "guideWidth is out of range";
       return false;
     }
     preferences_.putUChar(kPrefTypographyGuideWidth, static_cast<uint8_t>(intValue));
   }
-  if (readJsonInt(body, "guideGap", intValue)) {
+  if (jsontext::readInt(body, "guideGap", intValue)) {
     if (!inRange(intValue, kTypographyGuideGapRange)) {
       error = "guideGap is out of range";
       return false;
@@ -1711,7 +1532,7 @@ String CompanionSyncManager::wifiJson() {
   if (best != nullptr) {
     topSsid = String(best->ssid.c_str());
   }
-  out += ",\"ssid\":\"" + jsonEscape(topSsid) + "\"";
+  out += ",\"ssid\":\"" + jsontext::escape(topSsid) + "\"";
   out += ",\"networks\":[";
   bool first = true;
   for (const net::WifiSlot &slot : slots) {
@@ -1720,7 +1541,7 @@ String CompanionSyncManager::wifiJson() {
     }
     first = false;
     out += "{\"slot\":" + String(slot.index) + ",\"ssid\":\"" +
-           jsonEscape(String(slot.ssid.c_str())) + "\",\"passwordSet\":" +
+           jsontext::escape(String(slot.ssid.c_str())) + "\",\"passwordSet\":" +
            (slot.password.empty() ? "false" : "true") + "}";
   }
   out += "]}";
@@ -1739,7 +1560,7 @@ bool CompanionSyncManager::applyWifiJson(const String &body, String &error) {
 
   // {"forget":"<ssid>"} removes a saved network without saving a new one.
   String forgetSsid;
-  if (readJsonString(body, "forget", forgetSsid)) {
+  if (jsontext::readString(body, "forget", forgetSsid)) {
     forgetSsid.trim();
     if (forgetSsid.isEmpty() || !store.forget(std::string(forgetSsid.c_str()))) {
       error = "Network not found";
@@ -1749,7 +1570,7 @@ bool CompanionSyncManager::applyWifiJson(const String &body, String &error) {
   }
 
   String ssid;
-  if (!readJsonString(body, "ssid", ssid)) {
+  if (!jsontext::readString(body, "ssid", ssid)) {
     error = "Missing Wi-Fi SSID";
     return false;
   }
@@ -1764,7 +1585,7 @@ bool CompanionSyncManager::applyWifiJson(const String &body, String &error) {
   }
 
   String password;
-  readJsonString(body, "password", password);
+  jsontext::readString(body, "password", password);
   if (password.length() > 64) {
     error = "Wi-Fi password is too long";
     return false;
@@ -1798,7 +1619,7 @@ String CompanionSyncManager::rssFeedsJson() {
         body += ",";
       }
       first = false;
-      body += "\"" + jsonEscape(line) + "\"";
+      body += "\"" + jsontext::escape(line) + "\"";
     }
   }
   if (file) {
@@ -1814,12 +1635,12 @@ bool CompanionSyncManager::writeRssFeedsJson(const String &body, String &error) 
     return false;
   }
 
-  int colonIndex = -1;
-  if (!findJsonKey(body, "feeds", colonIndex)) {
+  const int colonIndex = jsontext::findKeyColon(body, "feeds");
+  if (colonIndex < 0) {
     error = "Missing feeds array";
     return false;
   }
-  int index = skipJsonWhitespace(body, colonIndex + 1);
+  int index = jsontext::skipWhitespace(body, colonIndex + 1);
   if (index >= static_cast<int>(body.length()) || body[index] != '[') {
     error = "feeds must be an array";
     return false;
@@ -1829,13 +1650,13 @@ bool CompanionSyncManager::writeRssFeedsJson(const String &body, String &error) 
   std::vector<String> feeds;
   feeds.reserve(8);
   while (true) {
-    index = skipJsonWhitespace(body, index);
+    index = jsontext::skipWhitespace(body, index);
     if (index < static_cast<int>(body.length()) && body[index] == ']') {
       break;
     }
 
     String feed;
-    if (!nextJsonArrayString(body, index, feed)) {
+    if (!jsontext::nextArrayString(body, index, feed)) {
       error = "Invalid feeds array";
       return false;
     }
@@ -1892,47 +1713,6 @@ String CompanionSyncManager::deviceSuffix() const {
   char suffix[7];
   snprintf(suffix, sizeof(suffix), "%06X", static_cast<unsigned int>(mac & 0xFFFFFF));
   return String(suffix);
-}
-
-String CompanionSyncManager::jsonEscape(const String &value) const {
-  String escaped;
-  escaped.reserve(value.length() + 8);
-  for (size_t i = 0; i < value.length(); ++i) {
-    const uint8_t c = static_cast<uint8_t>(value[i]);
-    switch (c) {
-      case '"':
-        escaped += "\\\"";
-        break;
-      case '\\':
-        escaped += "\\\\";
-        break;
-      case '\b':
-        escaped += "\\b";
-        break;
-      case '\f':
-        escaped += "\\f";
-        break;
-      case '\n':
-        escaped += "\\n";
-        break;
-      case '\r':
-        escaped += "\\r";
-        break;
-      case '\t':
-        escaped += "\\t";
-        break;
-      default:
-        if (c < 0x20) {
-          char code[7];
-          std::snprintf(code, sizeof(code), "\\u%04x", c);
-          escaped += code;
-        } else {
-          escaped += static_cast<char>(c);
-        }
-        break;
-    }
-  }
-  return escaped;
 }
 
 String CompanionSyncManager::sanitizeFilename(const String &name) const {

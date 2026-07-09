@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "net/HttpFetch.h"
 #include "net/WifiConnection.h"
 #include "update/ReleaseParser.h"
 
@@ -29,10 +30,6 @@ constexpr uint32_t kDownloadStallTimeoutSecs = 20;
 // Marginal Wi-Fi can stall or corrupt the multi-MB asset download; retry the
 // whole download a few times before giving up.
 constexpr int kMaxDownloadAttempts = 3;
-const char *kRedirectHeaderKeys[] = {
-    "Location",
-};
-
 String trimCopy(String value) {
   value.trim();
   return value;
@@ -42,52 +39,6 @@ bool parseBoolValue(const String &value) {
   String lowered = trimCopy(value);
   lowered.toLowerCase();
   return lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on";
-}
-
-String readBodyLimited(HTTPClient &http, size_t maxBytes) {
-  WiFiClient *stream = http.getStreamPtr();
-  if (stream == nullptr) {
-    return "";
-  }
-
-  const int reportedSize = http.getSize();
-  String body;
-  const size_t reserveBytes =
-      reportedSize > 0 ? std::min(static_cast<size_t>(reportedSize), maxBytes) : 1024;
-  body.reserve(reserveBytes);
-
-  uint8_t buffer[512];
-  size_t totalRead = 0;
-  while (http.connected() || stream->available()) {
-    if (reportedSize > 0 && totalRead >= static_cast<size_t>(reportedSize)) {
-      break;
-    }
-
-    const int available = stream->available();
-    if (available <= 0) {
-      delay(1);
-      continue;
-    }
-
-    const size_t remaining = maxBytes - totalRead;
-    if (remaining == 0) {
-      break;
-    }
-
-    const size_t chunkSize =
-        std::min(remaining, std::min(sizeof(buffer), static_cast<size_t>(available)));
-    const int bytesRead = stream->readBytes(buffer, chunkSize);
-    if (bytesRead <= 0) {
-      break;
-    }
-
-    totalRead += static_cast<size_t>(bytesRead);
-    for (int i = 0; i < bytesRead; ++i) {
-      body += static_cast<char>(buffer[i]);
-    }
-  }
-
-  return body;
 }
 
 String userAgentForVersion(const String &version) {
@@ -187,38 +138,28 @@ bool OtaUpdater::fetchLatestRelease(const Config &config, LatestRelease &release
 
   reportStatus(callback, context, kStatusTitle, "Checking GitHub", config.githubRepo, 22);
 
-  WiFiClientSecure client;
-  // GitHub release metadata and assets can redirect across multiple hosts, so keep the transport
-  // flexible for now. A signed manifest is the best follow-up hardening step.
-  client.setInsecure();
-  client.setHandshakeTimeout(15);
+  net::FetchOptions options;
+  options.userAgent = userAgentForVersion(version);
+  options.accept = "application/vnd.github+json";
+  options.followRedirects = true;
+  options.maxBodyBytes = kMaxReleaseJsonBytes;
+  const net::FetchResult fetched = net::httpGet(url, options);
 
-  HTTPClient http;
-  http.setUserAgent(userAgentForVersion(version));
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(15000);
-  if (!http.begin(client, url)) {
+  if (fetched.status == net::FetchStatus::BeginFailed) {
     errorDetail = "HTTP begin failed";
     return false;
   }
-
-  http.addHeader("Accept", "application/vnd.github+json");
-  const int statusCode = http.GET();
-  if (statusCode != HTTP_CODE_OK) {
-    if (statusCode == HTTP_CODE_NOT_FOUND) {
+  if (fetched.status == net::FetchStatus::HttpError) {
+    if (fetched.httpCode == HTTP_CODE_NOT_FOUND) {
       errorDetail = "No published release";
     } else {
-      errorDetail = "GitHub HTTP " + String(statusCode);
+      errorDetail = "GitHub HTTP " + String(fetched.httpCode);
     }
-    http.end();
     return false;
   }
 
-  const String body = readBodyLimited(http, kMaxReleaseJsonBytes);
-  http.end();
-
   releaseparser::ReleaseInfo parsed;
-  if (!releaseparser::parse(body, config.assetName, parsed)) {
+  if (!releaseparser::parse(fetched.body, config.assetName, parsed)) {
     errorDetail = "Release tag missing";
     return false;
   }
@@ -238,42 +179,30 @@ bool OtaUpdater::resolveDownloadUrl(const String &assetUrl, const String &versio
                                     StatusCallback callback, void *context) const {
   reportStatus(callback, context, kStatusTitle, "Resolving asset", version, 29);
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(15);
+  net::FetchOptions options;
+  options.userAgent = userAgentForVersion(version);
+  options.accept = "application/octet-stream";
+  // maxBodyBytes 0: only the status/Location matter, the body is never read.
+  const net::FetchResult fetched = net::httpGet(assetUrl, options);
 
-  HTTPClient http;
-  http.collectHeaders(kRedirectHeaderKeys, 1);
-  http.setUserAgent(userAgentForVersion(version));
-  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-  http.setTimeout(15000);
-  if (!http.begin(client, assetUrl)) {
-    errorDetail = "Asset URL failed";
-    return false;
-  }
-
-  http.addHeader("Accept", "application/octet-stream");
-  const int statusCode = http.GET();
-  if (statusCode == HTTP_CODE_OK) {
+  if (fetched.status == net::FetchStatus::Ok) {
     resolvedUrl = assetUrl;
-    http.end();
     return true;
   }
-
-  if (statusCode == HTTP_CODE_MOVED_PERMANENTLY || statusCode == HTTP_CODE_FOUND ||
-      statusCode == HTTP_CODE_SEE_OTHER || statusCode == HTTP_CODE_TEMPORARY_REDIRECT ||
-      statusCode == HTTP_CODE_PERMANENT_REDIRECT) {
-    resolvedUrl = http.header("Location");
-    http.end();
+  if (fetched.status == net::FetchStatus::Redirect) {
+    resolvedUrl = fetched.location;
     if (!resolvedUrl.isEmpty()) {
       return true;
     }
     errorDetail = "Asset redirect missing";
     return false;
   }
+  if (fetched.status == net::FetchStatus::BeginFailed) {
+    errorDetail = "Asset URL failed";
+    return false;
+  }
 
-  errorDetail = "Asset HTTP " + String(statusCode);
-  http.end();
+  errorDetail = "Asset HTTP " + String(fetched.httpCode);
   return false;
 }
 

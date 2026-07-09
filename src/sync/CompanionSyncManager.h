@@ -80,7 +80,6 @@ class CompanionSyncManager {
   String rssFeedsJson();
   bool writeRssFeedsJson(const String &body, String &error);
   String deviceSuffix() const;
-  String jsonEscape(const String &value) const;
   String sanitizeFilename(const String &name) const;
   RsvpMetadata readRsvpMetadata(const String &path) const;
   bool progressPercentForPath(const String &path, uint8_t &percent);

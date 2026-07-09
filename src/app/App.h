@@ -24,7 +24,9 @@
 #include "net/WifiCredentialStore.h"
 #include "quotes/Quote.h"
 #include "quotes/QuoteStore.h"
+#include "reader/ContextPreview.h"
 #include "reader/ReadingLoop.h"
+#include "reader/TimeEstimate.h"
 #include "rss/RssFeedManager.h"
 #include "standby/Screensaver.h"
 #include "stats/Achievements.h"
@@ -497,7 +499,6 @@ class App {
   void rebuildTimeEstimateCache();
   void invalidateTimeEstimateCache();
   void flushPendingTimeEstimateRebuild();
-  void cancelTimeEstimateBuild();
   void updateTimeEstimateBuild(uint32_t nowMs);
   bool timeEstimateBuildMatchesCurrentBook() const;
   String formatReadingTimeRemaining(uint32_t remainingMs) const;
@@ -527,9 +528,6 @@ class App {
   String collectPhantomAfterText(size_t currentIndex, size_t charTarget) const;
   String phantomBeforeText() const;
   String phantomAfterText() const;
-  bool isParagraphStart(size_t wordIndex) const;
-  size_t paragraphStartAtOrBefore(size_t wordIndex) const;
-  size_t contextPreviewAnchorIndex(size_t currentIndex) const;
   void updateContextPreviewWindow(size_t currentIndex);
   void invalidateContextPreviewWindow();
   void renderStorageStatus(const char *title, const char *line1, const char *line2,
@@ -629,8 +627,6 @@ class App {
   std::vector<uint32_t> bookCelebrationCells_;
   std::vector<uint32_t> bookCelebrationNext_;
   size_t lastSavedWordIndex_ = static_cast<size_t>(-1);
-  size_t contextPreviewStartIndex_ = 0;
-  size_t contextPreviewCurrentLocalIndex_ = static_cast<size_t>(-1);
   size_t currentBookIndex_ = 0;
   size_t pendingBootBookIndex_ = 0;
   size_t menuSelectedIndex_ = 0;
@@ -714,19 +710,13 @@ class App {
   bool starredRemoveMode_ = false;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
-  std::vector<uint32_t> wordBonusBlockPrefixSumMs_;
+  timeestimate::PrefixCache timeEstimate_;
   String timeEstimateBuildBookPath_;
-  size_t timeEstimateBuildWordCount_ = 0;
-  size_t timeEstimateBuildBlockCount_ = 0;
-  size_t timeEstimateBuildNextBlock_ = 0;
-  uint32_t timeEstimateBuildRunningMs_ = 0;
   uint32_t timeEstimateBuildStartedMs_ = 0;
   uint32_t timeEstimateBuildLastLogMs_ = 0;
-  bool timeEstimateCacheValid_ = false;
-  bool timeEstimateBuildInProgress_ = false;
   bool accurateTimeEstimateEnabled_ = true;
   bool pacingCacheDirty_ = false;
-  std::vector<DisplayManager::ContextWord> contextPreviewWords_;
+  contextpreview::Window contextPreview_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
   // Wi-Fi settings screen is dynamic: this maps each visible row to its action.
   std::vector<WifiSettingsRow> wifiSettingsRows_;
@@ -782,7 +772,6 @@ class App {
   bool otaCheckInProgress_ = false;
   bool otaUpdatePromptPending_ = false;
   bool contextViewVisible_ = false;
-  bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;
   bool usingStorageBook_ = false;
   bool storageReady_ = false;

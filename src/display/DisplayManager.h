@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "reader/ContextPreview.h"
 
 class DisplayManager {
  public:
@@ -22,11 +23,8 @@ class DisplayManager {
     uint8_t guideGap = 4;
   };
 
-  struct ContextWord {
-    String text;
-    bool paragraphStart = false;
-    bool current = false;
-  };
+  // The context-preview window owns this shape; the display only reads it.
+  using ContextWord = contextpreview::Word;
 
   struct ReaderChrome {
     ReaderChrome()

@@ -6,31 +6,16 @@
 #include "board/BoardConfig.h"
 #include "board/ImuDriver.h"
 #include "motion/Orientation.h"
+#include "timer/BlockSequencer.h"
 
+// IMU adapter around the pure focustimer::BlockSequencer: polls the
+// accelerometer, classifies faces, and maps the sequencer state to the
+// board's UI orientation. All block sequencing lives (and is tested) in the
+// sequencer.
 class FocusTimer {
  public:
-  enum class Genre : uint8_t {
-    Chores = 0,
-    RsvpNano,
-    StrengthLabs,
-    SelfCare,
-    Other,
-    None = 0xFF,
-  };
-
-  enum class State : uint8_t {
-    Unavailable = 0,
-    GenreSelect,
-    WaitForTouchStart,
-    TouchRunning,
-    WaitAfterTouch,
-    WorkRunning,
-    BreakRunning,
-    WaitAfterWork,
-    WaitAfterBreak,
-    Cancelled,
-    Complete,
-  };
+  using Genre = focustimer::BlockSequencer::Genre;
+  using State = focustimer::BlockSequencer::State;
 
   bool begin();
   void open();
@@ -58,47 +43,8 @@ class FocusTimer {
   static const char *genreLabel(Genre genre);
 
  private:
-  enum class TimerMode : uint8_t {
-    None = 0,
-    Touch,
-    Work,
-    Break,
-  };
-
-  // Orientation faces live in the orientation module; keep the historical
-  // name so the timer's helpers and members read unchanged.
-  using OrientationState = orientation::Side;
-
-  void updateOrientation(uint32_t nowMs);
-  void resetOrientationStability();
-  bool orientationInputArmed(uint32_t nowMs) const;
-  void transitionTo(State nextState, uint32_t nowMs);
-  void clearSession();
-  void startMode(TimerMode mode, uint32_t nowMs, uint32_t durationMs,
-                 OrientationState startOrientation);
-  void stopActiveTimer();
-  void completeActiveTimer();
-  bool timerExpired(uint32_t nowMs) const;
-  static bool isShortSide(OrientationState orientation);
-  static OrientationState oppositeShortSide(OrientationState orientation);
-  static BoardConfig::UiOrientation portraitOrientationForShortSide(
-      OrientationState orientation);
+  static BoardConfig::UiOrientation portraitOrientationForShortSide(orientation::Side side);
 
   ImuDriver imu_;
-  orientation::Stabilizer orientationStabilizer_;
-  OrientationState activeStartOrientation_ = OrientationState::Unknown;
-  OrientationState lastShortSide_ = OrientationState::Unknown;
-
-  State state_ = State::Unavailable;
-  Genre genre_ = Genre::None;
-  TimerMode activeMode_ = TimerMode::None;
-  uint32_t stateStartedMs_ = 0;
-  uint32_t feedbackStartedMs_ = 0;
-  uint32_t timerStartedMs_ = 0;
-  uint32_t timerDurationMs_ = 0;
-  bool timerRunning_ = false;
-  bool completionCuePending_ = false;
-  uint8_t completedTouchBlocks_ = 0;
-  uint8_t completedWorkBlocks_ = 0;
-  uint8_t completedBreakBlocks_ = 0;
+  focustimer::BlockSequencer sequencer_;
 };
