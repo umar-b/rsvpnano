@@ -162,7 +162,7 @@ void BookProgress::clearBook(const String &path) {
   const String keys[] = {
       bookprogress::positionKey(path),  bookprogress::wordCountKey(path),
       bookprogress::recentKey(path),    bookprogress::finishedKey(path),
-      bookprogress::bookmarkKey(path),
+      bookprogress::bookmarkKey(path),  bookprogress::wpmKey(path),
   };
   for (const String &key : keys) {
     if (prefs_.isKey(key.c_str())) {
