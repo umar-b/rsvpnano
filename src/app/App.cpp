@@ -534,7 +534,8 @@ void App::begin() {
   // First thing every boot: say why we are booting. ESP_RST_PANIC, _INT_WDT,
   // _TASK_WDT and _BROWNOUT distinguish a crash/reset loop from a normal
   // power-on; without this line field crashes are undiagnosable.
-  Serial.printf("[boot] reset reason=%d\n", static_cast<int>(esp_reset_reason()));
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  Serial.printf("[boot] reset reason=%d\n", static_cast<int>(resetReason));
   BoardConfig::begin();
   button_.begin();
   powerButton_.begin();
@@ -693,6 +694,22 @@ void App::begin() {
   if (displayReady) {
     display_.renderCenteredWord("READY");
     logApp("Display init ok");
+    // Field crashes reboot without a trace on the shipping build (no serial),
+    // so an abnormal reset announces itself on screen: the reason picks the
+    // fix (panic = code bug, watchdog = blocked loop, brownout = power).
+    const char *crashLabel = nullptr;
+    switch (resetReason) {
+      case ESP_RST_PANIC:    crashLabel = "Crash (panic)"; break;
+      case ESP_RST_INT_WDT:  crashLabel = "Watchdog (interrupt)"; break;
+      case ESP_RST_TASK_WDT: crashLabel = "Watchdog (task)"; break;
+      case ESP_RST_WDT:      crashLabel = "Watchdog (other)"; break;
+      case ESP_RST_BROWNOUT: crashLabel = "Brownout (power)"; break;
+      default: break;
+    }
+    if (crashLabel != nullptr) {
+      display_.renderStatus("Recovered", crashLabel, otaUpdater_.currentVersion());
+      delay(1600);
+    }
   } else {
     ESP_LOGE(kAppTag, "Display init failed");
     Serial.println("[app] Display init failed");
