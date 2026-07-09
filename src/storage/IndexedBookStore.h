@@ -6,39 +6,18 @@
 #include <vector>
 
 #include "reader/BookWordSource.h"
+#include "storage/BookIndex.h"
 
 class IndexedBookStore : public BookWordSource {
  public:
-  struct Header {
-    uint32_t magic = 0;
-    uint32_t version = 0;
-    uint32_t headerSize = 0;
-    uint32_t recordSize = 0;
-    uint32_t sourceSize = 0;
-    uint32_t sourceFingerprint = 0;
-    uint32_t wordCount = 0;
-    uint32_t paragraphCount = 0;
-    uint32_t chapterCount = 0;
-    uint32_t recordsOffset = 0;
-    uint32_t paragraphsOffset = 0;
-    uint32_t chaptersOffset = 0;
-    uint32_t dataSize = 0;
-  };
+  // The on-disk format lives in the pure bookindex module (shared with the
+  // host-tested builder); re-exported here so readers keep their spelling.
+  using Header = bookindex::Header;
+  using WordRecord = bookindex::WordRecord;
+  using ChapterRecord = bookindex::ChapterRecord;
 
-  struct WordRecord {
-    uint32_t offset = 0;
-    uint16_t length = 0;
-    uint16_t flags = 0;
-  };
-
-  struct ChapterRecord {
-    uint32_t wordIndex = 0;
-    uint32_t titleLength = 0;
-    char title[64] = {};
-  };
-
-  static constexpr uint32_t kMagic = 0x58444952UL;  // RIDX
-  static constexpr uint32_t kVersion = 4;
+  static constexpr uint32_t kMagic = bookindex::kMagic;
+  static constexpr uint32_t kVersion = bookindex::kVersion;
   static constexpr size_t kWordCacheSize = 256;
 
   IndexedBookStore() = default;

@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "board/BoardConfig.h"
+#include "storage/BookIndex.h"
 #include "storage/EpubConverter.h"
 #include "text/BookText.h"
 #include "text/LatinText.h"
@@ -556,178 +557,6 @@ bool readIndexHeader(const String &path, IndexedBookStore::Header &header) {
          header.recordsOffset >= sizeof(IndexedBookStore::Header);
 }
 
-struct IndexedBuildContext {
-  File *indexFile = nullptr;
-  File *dataFile = nullptr;
-  BookMetadata *metadata = nullptr;
-  uint32_t wordCount = 0;
-  uint32_t dataSize = 0;
-  bool failed = false;
-  const char *failure = "";
-};
-
-void addIndexedChapterMarker(IndexedBuildContext &context, const String &title) {
-  if (title.isEmpty() || context.metadata == nullptr) {
-    return;
-  }
-
-  ChapterMarker marker;
-  marker.title = title;
-  marker.wordIndex = context.wordCount;
-
-  if (!context.metadata->chapters.empty() &&
-      context.metadata->chapters.back().wordIndex == marker.wordIndex) {
-    context.metadata->chapters.back() = marker;
-    return;
-  }
-
-  context.metadata->chapters.push_back(marker);
-}
-
-void addIndexedParagraphMarker(IndexedBuildContext &context) {
-  if (context.metadata == nullptr) {
-    return;
-  }
-
-  const size_t wordIndex = context.wordCount;
-  if (!context.metadata->paragraphStarts.empty() &&
-      context.metadata->paragraphStarts.back() == wordIndex) {
-    return;
-  }
-
-  context.metadata->paragraphStarts.push_back(wordIndex);
-}
-
-bool pushIndexedWord(String token, IndexedBuildContext &context, ParseStats *stats) {
-  trimAsciiWhitespace(token);
-
-  if (token.length() >= 3 && static_cast<uint8_t>(token[0]) == 0xEF &&
-      static_cast<uint8_t>(token[1]) == 0xBB && static_cast<uint8_t>(token[2]) == 0xBF) {
-    token.remove(0, 3);
-  }
-
-  trimAsciiWhitespace(token);
-
-  if (token.isEmpty() ||
-      (!tokenHasReadableCharacter(token) && !isStandaloneRhythmToken(token))) {
-    return true;
-  }
-
-  if (token.length() > UINT16_MAX ||
-      context.dataSize > UINT32_MAX - static_cast<uint32_t>(token.length())) {
-    context.failed = true;
-    context.failure = "Index limit reached";
-    return false;
-  }
-
-  if ((context.wordCount % kParseMemoryCheckWordInterval) == 0 && context.wordCount > 0 &&
-      parseMemoryLow()) {
-    if (stats != nullptr) {
-      stats->memoryLow = true;
-    }
-    context.failed = true;
-    context.failure = "Memory limit reached";
-    return false;
-  }
-
-  IndexedBookStore::WordRecord record;
-  record.offset = context.dataSize;
-  record.length = static_cast<uint16_t>(token.length());
-  record.flags = 0;
-
-  if (!writeExact(*context.dataFile, token.c_str(), token.length()) ||
-      !writeExact(*context.indexFile, &record, sizeof(record))) {
-    context.failed = true;
-    context.failure = "SD write failed";
-    return false;
-  }
-
-  context.dataSize += static_cast<uint32_t>(token.length());
-  ++context.wordCount;
-  if (context.metadata != nullptr) {
-    context.metadata->wordCount = context.wordCount;
-  }
-  return true;
-}
-
-bool appendIndexedLineWords(const String &line, IndexedBuildContext &context, ParseStats *stats) {
-  return appendTokenizedLineWords(
-      line, [&](const String &token) { return pushIndexedWord(token, context, stats); },
-      [&]() { return static_cast<size_t>(context.wordCount); }, stats);
-}
-
-bool processIndexedBookLine(const String &line, IndexedBuildContext &context,
-                            bool &paragraphPending, ParseStats *stats) {
-  const String trimmed = stripBom(line);
-  if (trimmed.isEmpty()) {
-    paragraphPending = true;
-    return true;
-  }
-
-  String chapterTitle;
-  if (chapterTitleFromLine(line, chapterTitle)) {
-    addIndexedChapterMarker(context, chapterTitle);
-    paragraphPending = true;
-  }
-
-  if (paragraphPending) {
-    addIndexedParagraphMarker(context);
-    paragraphPending = false;
-  }
-  return appendIndexedLineWords(line, context, stats);
-}
-
-bool processIndexedRsvpLine(const String &line, IndexedBuildContext &context,
-                            bool &paragraphPending, ParseStats *stats) {
-  String trimmed = stripBom(line);
-  if (trimmed.isEmpty()) {
-    paragraphPending = true;
-    return true;
-  }
-
-  if (trimmed.startsWith("@@")) {
-    trimmed.remove(0, 1);
-    if (paragraphPending) {
-      addIndexedParagraphMarker(context);
-      paragraphPending = false;
-    }
-    return appendIndexedLineWords(trimmed, context, stats);
-  }
-
-  if (trimmed.startsWith("@")) {
-    String lowered = trimmed;
-    lowered.toLowerCase();
-    if (prefixHasBoundary(lowered, "@para")) {
-      paragraphPending = true;
-      return true;
-    }
-    if (prefixHasBoundary(lowered, "@chapter")) {
-      String title = directiveValue(trimmed, "@chapter");
-      if (title.isEmpty()) {
-        title = "Chapter";
-      }
-      addIndexedChapterMarker(context, title);
-      paragraphPending = true;
-      return true;
-    }
-    if (context.metadata != nullptr && prefixHasBoundary(lowered, "@title")) {
-      context.metadata->title = directiveValue(trimmed, "@title");
-      return true;
-    }
-    if (context.metadata != nullptr && prefixHasBoundary(lowered, "@author")) {
-      context.metadata->author = directiveValue(trimmed, "@author");
-      return true;
-    }
-    return true;
-  }
-
-  if (paragraphPending) {
-    addIndexedParagraphMarker(context);
-    paragraphPending = false;
-  }
-  return appendIndexedLineWords(line, context, stats);
-}
-
 }  // namespace
 
 void StorageManager::setStatusCallback(StatusCallback callback, void *context) {
@@ -1246,17 +1075,19 @@ bool StorageManager::buildIndexedBook(const String &path, BookMetadata &metadata
     return false;
   }
 
-  IndexedBuildContext context;
-  context.indexFile = &indexFile;
-  context.dataFile = &dataFile;
-  context.metadata = &metadata;
+  bookindex::BuilderConfig builderConfig;
+  builderConfig.maxLineChars = kMaxBookLineChars;
+  builderConfig.memoryCheckWordInterval = kParseMemoryCheckWordInterval;
+  bookindex::Builder builder(
+      rsvpFormat, metadata,
+      [&indexFile, &dataFile](const bookindex::WordRecord &record, const char *bytes,
+                              size_t length) {
+        return writeExact(dataFile, bytes, length) &&
+               writeExact(indexFile, &record, sizeof(record));
+      },
+      [] { return parseMemoryLow(); }, builderConfig);
 
-  String line;
-  line.reserve(256);
-  bool paragraphPending = true;
   bool keepReading = true;
-  bool parseFailed = false;
-  ParseStats stats;
 
   constexpr size_t kBufSize = 4096;
   static uint8_t buf[kBufSize];
@@ -1279,48 +1110,17 @@ bool StorageManager::buildIndexedBook(const String &path, BookMetadata &metadata
     }
     yield();
 
-    for (size_t i = 0; i < bytesRead && keepReading; ++i) {
-      const char c = static_cast<char>(buf[i]);
-
-      if (c == '\r') {
-        continue;
-      }
-
-      if (c == '\n') {
-        keepReading = rsvpFormat
-                          ? processIndexedRsvpLine(line, context, paragraphPending, &stats)
-                          : processIndexedBookLine(line, context, paragraphPending, &stats);
-        if (!keepReading && hasBookWordLimit()) {
-          Serial.printf("[storage-index] Reached %lu word limit, truncating book\n",
-                        static_cast<unsigned long>(kMaxBookWords));
-        } else if (!keepReading && (stats.memoryLow || context.failed)) {
-          parseFailed = true;
-        }
-        line = "";
-        continue;
-      }
-
-      line += c;
-      if (line.length() >= kMaxBookLineChars) {
-        keepReading = rsvpFormat
-                          ? processIndexedRsvpLine(line, context, paragraphPending, &stats)
-                          : processIndexedBookLine(line, context, paragraphPending, &stats);
-        ++stats.longLineSplits;
-        if (!keepReading && (stats.memoryLow || context.failed)) {
-          parseFailed = true;
-        }
-        line = "";
-      }
-    }
+    keepReading = builder.feed(buf, bytesRead);
   }
 
-  if (!line.isEmpty() && keepReading && !reachedBookWordLimit(context.wordCount)) {
-    keepReading = rsvpFormat ? processIndexedRsvpLine(line, context, paragraphPending, &stats)
-                             : processIndexedBookLine(line, context, paragraphPending, &stats);
-    if (!keepReading && (stats.memoryLow || context.failed)) {
-      parseFailed = true;
-    }
+  keepReading = builder.finish() && keepReading;
+  if (!keepReading && !builder.failed() && hasBookWordLimit()) {
+    Serial.printf("[storage-index] Reached %lu word limit, truncating book\n",
+                  static_cast<unsigned long>(kMaxBookWords));
   }
+
+  const ParseStats &stats = builder.stats();
+  bool parseFailed = builder.failed();
 
   if (stats.longLineSplits > 0 || stats.malformedUtf8 > 0 || stats.nonAsciiCodepoints > 0) {
     Serial.printf("[storage-index] Parse cleanup: long_lines=%u malformed_utf8=%u non_ascii=%u\n",
@@ -1329,8 +1129,8 @@ bool StorageManager::buildIndexedBook(const String &path, BookMetadata &metadata
                   static_cast<unsigned int>(stats.nonAsciiCodepoints));
   }
 
-  if (parseFailed || context.wordCount == 0) {
-    const char *detail = context.failure[0] == '\0' ? "No readable words" : context.failure;
+  if (parseFailed || builder.wordCount() == 0) {
+    const char *detail = builder.failure()[0] == '\0' ? "No readable words" : builder.failure();
     indexFile.close();
     dataFile.close();
     source.close();
@@ -1348,20 +1148,11 @@ bool StorageManager::buildIndexedBook(const String &path, BookMetadata &metadata
     metadata.title = normalizeDisplayText(displayNameWithoutExtension(path));
   }
 
-  header.magic = IndexedBookStore::kMagic;
-  header.version = IndexedBookStore::kVersion;
-  header.headerSize = sizeof(IndexedBookStore::Header);
-  header.recordSize = sizeof(IndexedBookStore::WordRecord);
-  header.sourceSize = static_cast<uint32_t>(sourceBytes);
-  header.sourceFingerprint = fingerprint;
-  header.wordCount = context.wordCount;
-  header.paragraphCount = static_cast<uint32_t>(metadata.paragraphStarts.size());
-  header.chapterCount = static_cast<uint32_t>(metadata.chapters.size());
-  header.recordsOffset = sizeof(IndexedBookStore::Header);
-  header.paragraphsOffset =
-      header.recordsOffset + header.wordCount * sizeof(IndexedBookStore::WordRecord);
-  header.chaptersOffset = header.paragraphsOffset + header.paragraphCount * sizeof(uint32_t);
-  header.dataSize = context.dataSize;
+  header = bookindex::layoutHeader(static_cast<uint32_t>(sourceBytes), fingerprint,
+                                   builder.wordCount(),
+                                   static_cast<uint32_t>(metadata.paragraphStarts.size()),
+                                   static_cast<uint32_t>(metadata.chapters.size()),
+                                   builder.dataSize());
 
   if (!indexFile.seek(header.paragraphsOffset)) {
     parseFailed = true;
