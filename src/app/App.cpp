@@ -8,6 +8,7 @@
 #include <esp_system.h>
 #include <esp_sleep.h>
 #include <esp_log.h>
+#include <ArduinoOTA.h>
 #include <SD_MMC.h>
 #include <WiFi.h>
 #include <algorithm>
@@ -3490,6 +3491,9 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
     case WifiSettingsRowKind::CheckNow:
       runFirmwareCheckOnly(nowMs);
       return;
+    case WifiSettingsRowKind::DevFlash:
+      runWirelessDevFlash(nowMs);
+      return;
     default:
       return;
   }
@@ -4199,6 +4203,8 @@ void App::rebuildSettingsMenuItems() {
     wifiSettingsRows_.push_back({WifiSettingsRowKind::CheckNow, -1});
     settingsMenuItems_.push_back("Last check: " + otaLastResultLabel());
     wifiSettingsRows_.push_back({WifiSettingsRowKind::LastResult, -1});
+    settingsMenuItems_.push_back("Dev flash (espota)");
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::DevFlash, -1});
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
@@ -4643,6 +4649,58 @@ void App::runRssFeedCheck(uint32_t nowMs) {
   display_.renderStatus("RSS", result.summary, result.detail);
   delay(1800);
   renderMainMenu();
+}
+
+void App::runWirelessDevFlash(uint32_t nowMs) {
+  if (blockNetworkActionForOtaCheck("Dev flash", nowMs)) {
+    return;
+  }
+  // espota flashes and reboots the device, so persist position up front.
+  saveReadingPosition(true);
+
+  display_.renderStatus("Dev flash", "Connecting Wi-Fi", "Please wait");
+  String ssid;
+  String password;
+  if (!resolveHomeWifi(ssid, password, /*scanFirst=*/true) || ssid.isEmpty() ||
+      !net::connectStation(ssid, password)) {
+    display_.renderStatus("Dev flash", "Wi-Fi failed", "Check saved networks");
+    delay(1800);
+    renderSettings();
+    return;
+  }
+
+  // ponytail: fixed espota password; a home-LAN dev tool, not a trust boundary.
+  ArduinoOTA.setHostname("rsvp-nano");
+  ArduinoOTA.setPassword("rsvpnano");
+  ArduinoOTA.onStart([this]() { display_.renderProgress("Dev flash", "Receiving", "", 0); });
+  ArduinoOTA.onProgress([this](unsigned int done, unsigned int total) {
+    const int percent =
+        total > 0 ? static_cast<int>((static_cast<uint64_t>(done) * 100) / total) : 0;
+    display_.renderProgress("Dev flash", "Receiving", "", percent);
+  });
+  ArduinoOTA.onError([this](ota_error_t error) {
+    display_.renderStatus("Dev flash", "Upload failed", "Code " + String(static_cast<int>(error)));
+    delay(1800);
+  });
+  ArduinoOTA.begin();
+
+  // Blocking on purpose: this is a bench-only mode. A successful upload
+  // reboots into the new firmware; BOOT button or the idle timeout exits.
+  display_.renderStatus("Dev flash", WiFi.localIP().toString(), "BOOT button exits");
+  Serial.printf("[devflash] listening at %s\n", WiFi.localIP().toString().c_str());
+  constexpr uint32_t kDevFlashWaitMs = 10UL * 60UL * 1000UL;
+  const uint32_t startedMs = millis();
+  while (millis() - startedMs < kDevFlashWaitMs) {
+    ArduinoOTA.handle();
+    button_.update(millis());
+    if (button_.wasPressedEvent()) {
+      break;
+    }
+    delay(10);
+  }
+  ArduinoOTA.end();
+  net::disconnect();
+  renderSettings();
 }
 
 String App::pacingDelayLabel(uint16_t delayMs) const { return String(delayMs) + " ms"; }

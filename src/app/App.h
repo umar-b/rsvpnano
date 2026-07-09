@@ -181,6 +181,7 @@ class App {
     FirmwareVersion,
     CheckNow,
     LastResult,
+    DevFlash,
   };
 
   struct WifiSettingsRow {
@@ -307,6 +308,7 @@ class App {
   void runFirmwareCheckOnly(uint32_t nowMs);
   String otaLastResultLabel();
   void runRssFeedCheck(uint32_t nowMs);
+  void runWirelessDevFlash(uint32_t nowMs);
   OtaUpdater::Config preferredOtaConfig();
   void scanWifiNetworks();
   void renderWifiNetworks();
