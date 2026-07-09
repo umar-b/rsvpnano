@@ -8,6 +8,8 @@
 #include "net/HttpFetch.h"
 #include "net/WifiConnection.h"
 #include "rss/FeedParser.h"
+#include "settings/PreferenceKeys.h"
+#include "text/EpubConvert.h"
 
 namespace {
 
@@ -27,6 +29,11 @@ constexpr uint8_t kMaxFeedsPerCheck = 8;
 constexpr uint8_t kMaxItemsPerFeed = 5;
 constexpr uint8_t kMaxArticlesPerCheck = 12;
 constexpr uint8_t kMaxFeedRedirects = 3;
+// Full-text extraction: only bother when the feed body reads like a summary,
+// and keep the page's words only when extraction clearly beat that summary.
+constexpr size_t kFullTextSummaryChars = 1500;
+constexpr size_t kMaxFullTextWords = 20000;
+constexpr size_t kMinFullTextWords = 120;
 
 String trimCopy(String value) {
   value.trim();
@@ -401,6 +408,14 @@ bool RssFeedManager::processFeed(const String &feedUrl, const String &feedBody,
 
 bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &preferences,
                               Result &result) {
+  // Fetch the full article before any SD file is open: the page download can
+  // take a while and may fail, in which case the feed summary still saves.
+  String fullBody;
+  const bool useFullText = preferences.getBool(settings::kPrefRssFullText, false) &&
+                           !item.link.isEmpty() &&
+                           item.body.length() < kFullTextSummaryChars &&
+                           fetchFullArticleRsvp(item, fullBody);
+
   SD_MMC.mkdir(kBooksPath);
   SD_MMC.mkdir(kArticleFilesPath);
   const String finalPath = String(kArticleFilesPath) + "/" + filenameForItem(item);
@@ -425,12 +440,16 @@ bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &pre
   }
   file.println();
 
-  String body = item.body;
-  if (body.length() > kMaxArticleChars) {
-    body = body.substring(0, kMaxArticleChars);
-    body += "\n\n[Article truncated on device.]";
+  if (useFullText) {
+    file.print(fullBody);
+  } else {
+    String body = item.body;
+    if (body.length() > kMaxArticleChars) {
+      body = body.substring(0, kMaxArticleChars);
+      body += "\n\n[Article truncated on device.]";
+    }
+    file.println(body);
   }
-  file.println(body);
   file.close();
 
   SD_MMC.remove(finalPath);
@@ -443,6 +462,54 @@ bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &pre
   markItemSeen(item, preferences);
   ++result.articlesSaved;
   Serial.printf("[rss] saved %s\n", finalPath.c_str());
+  return true;
+}
+
+bool RssFeedManager::fetchFullArticleRsvp(const feedparser::FeedItem &item, String &rsvpBody) {
+  if (!startsWithHttp(item.link)) {
+    return false;
+  }
+
+  net::FetchOptions options;
+  options.userAgent = userAgent();
+  options.followRedirects = true;
+  options.maxBodyBytes = kMaxFeedBytes;
+  options.reserveBytes = 8192;
+  options.totalTimeoutMs = kFeedTotalTimeoutMs;
+  options.idleTimeoutMs = kFeedIdleTimeoutMs;
+  const net::FetchResult page = net::httpGet(item.link, options);
+  if (page.status != net::FetchStatus::Ok || page.body.isEmpty()) {
+    Serial.printf("[rss] full-text fetch failed status=%d url=%s\n",
+                  static_cast<int>(page.status), item.link.c_str());
+    return false;
+  }
+
+  rsvpBody = "";
+  rsvpBody.reserve(8192);
+  size_t wordCount = 0;
+  String lastChapterTitle;
+  epubconvert::RsvpWriter writer(
+      [&rsvpBody](const char *data, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+          rsvpBody += data[i];
+        }
+      },
+      wordCount, kMaxFullTextWords, lastChapterTitle, [] {
+        yield();
+        delay(0);
+      });
+  if (writer.write(reinterpret_cast<const uint8_t *>(page.body.c_str()), page.body.length())) {
+    writer.finish();
+  }
+
+  if (wordCount < kMinFullTextWords) {
+    Serial.printf("[rss] full-text extraction thin (%u words), keeping summary: %s\n",
+                  static_cast<unsigned int>(wordCount), item.link.c_str());
+    return false;
+  }
+
+  Serial.printf("[rss] full text %u words from %s\n", static_cast<unsigned int>(wordCount),
+                item.link.c_str());
   return true;
 }
 

@@ -30,6 +30,10 @@ class RssFeedManager {
                    Result &result, uint8_t feedIndex, uint8_t feedCount, StatusCallback callback,
                    void *context);
   bool saveItem(const feedparser::FeedItem &item, Preferences &preferences, Result &result);
+  // Fetches the item's linked page and converts it to .rsvp body text via the
+  // epubconvert writer. False when the fetch fails or extraction yields too
+  // few words to beat the feed's own summary.
+  bool fetchFullArticleRsvp(const feedparser::FeedItem &item, String &rsvpBody);
   bool itemAlreadySeen(const feedparser::FeedItem &item, Preferences &preferences);
   void markItemSeen(const feedparser::FeedItem &item, Preferences &preferences);
   String seenKeyForItem(const feedparser::FeedItem &item) const;

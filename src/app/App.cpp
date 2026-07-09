@@ -3381,6 +3381,11 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
       rebuildSettingsMenuItems();
       renderSettings();
       return;
+    case WifiSettingsRowKind::RssFullText:
+      preferences_.putBool(kPrefRssFullText, !preferences_.getBool(kPrefRssFullText, false));
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
     case WifiSettingsRowKind::OtaOwner:
       openTextEntry(TextEntryPurpose::OtaOwner, "OTA Source", "GitHub owner", "",
                     preferences_.getString(kPrefOtaOwner, ""), "", false, 39,
@@ -4092,6 +4097,10 @@ void App::rebuildSettingsMenuItems() {
     wifiSettingsRows_.push_back({WifiSettingsRowKind::AddNetwork, -1});
     settingsMenuItems_.push_back("Auto OTA: " + String(otaAutoCheckEnabled() ? "On" : "Off"));
     wifiSettingsRows_.push_back({WifiSettingsRowKind::AutoUpdate, -1});
+    settingsMenuItems_.push_back(
+        "Full articles: " +
+        String(preferences_.getBool(kPrefRssFullText, false) ? "On" : "Off"));
+    wifiSettingsRows_.push_back({WifiSettingsRowKind::RssFullText, -1});
     settingsMenuItems_.push_back("OTA Owner: " + otaOwnerLabel());
     wifiSettingsRows_.push_back({WifiSettingsRowKind::OtaOwner, -1});
     settingsMenuItems_.push_back("Firmware: " + otaUpdater_.currentVersion());

@@ -174,6 +174,7 @@ class App {
     SavedNetwork,
     AddNetwork,
     AutoUpdate,
+    RssFullText,
     OtaOwner,
     FirmwareVersion,
     CheckNow,
