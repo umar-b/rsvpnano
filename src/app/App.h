@@ -219,6 +219,7 @@ class App {
   void openMainMenu(uint32_t nowMs);
   void cycleBrightness();
   void cycleThemeMode(uint32_t nowMs);
+  void updateAutoNight(uint32_t nowMs);
   void cycleUiLanguage(uint32_t nowMs);
   void cycleReaderMode(uint32_t nowMs);
   void cycleHandednessMode(uint32_t nowMs);
@@ -797,6 +798,12 @@ class App {
   PauseMode pauseMode_ = PauseMode::SentenceEnd;
   bool darkMode_ = true;
   bool nightMode_ = false;
+  // Auto night: flip the theme on the schedule's day/night edges (manual
+  // changes hold between edges). lastState -1 = not yet evaluated.
+  bool autoNightEnabled_ = false;
+  int8_t autoNightLastState_ = -1;
+  bool autoNightPrevDark_ = true;
+  uint32_t lastAutoNightCheckMs_ = 0;
   UiLanguage uiLanguage_ = UiLanguage::English;
   ReaderMode readerMode_ = ReaderMode::Rsvp;
   HandednessMode handednessMode_ = HandednessMode::Right;

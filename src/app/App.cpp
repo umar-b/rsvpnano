@@ -28,6 +28,7 @@
 #include "standby/BookCoverDrift.h"
 #include "standby/LifeGrid.h"
 #include "text/PreviewSamples.h"
+#include "time/NightSchedule.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
@@ -183,6 +184,7 @@ constexpr size_t kSettingsDisplayLanguageIndex = 16;
 constexpr size_t kSettingsDisplayMotionPauseIndex = 17;
 constexpr size_t kSettingsDisplayDailyGoalIndex = 18;
 constexpr size_t kSettingsDisplayPauseContextIndex = 19;
+constexpr size_t kSettingsDisplayAutoNightIndex = 20;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingRampInIndex = 3;
@@ -667,6 +669,7 @@ void App::begin() {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  autoNightEnabled_ = preferences_.getBool(kPrefAutoNight, autoNightEnabled_);
   loadGestureConfig();
   applyHandednessSettings(0, false);
   applyDisplayPreferences(0, false);
@@ -758,6 +761,8 @@ void App::update(uint32_t nowMs) {
   if (powerOffStarted_) {
     return;
   }
+
+  updateAutoNight(nowMs);
 
   if (batteryWarningOverlayVisible_) {
     updateBatteryWarningOverlay(nowMs);
@@ -1507,6 +1512,8 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  autoNightEnabled_ = preferences_.getBool(kPrefAutoNight, autoNightEnabled_);
+  autoNightLastState_ = -1;
 
   {
     // Respect a loaded book's per-book WPM override over the global pref when
@@ -1579,6 +1586,51 @@ void App::cycleThemeMode(uint32_t nowMs) {
   preferences_.putBool(kPrefNightMode, nightMode_);
   Serial.printf("[display] theme=%s\n", themeModeLabel().c_str());
   applyDisplayPreferences(nowMs);
+}
+
+void App::updateAutoNight(uint32_t nowMs) {
+  constexpr uint32_t kAutoNightCheckIntervalMs = 30000;
+  if (!autoNightEnabled_ || !deviceClock_.valid()) {
+    return;
+  }
+  if (autoNightLastState_ >= 0 && nowMs - lastAutoNightCheckMs_ < kAutoNightCheckIntervalMs) {
+    return;
+  }
+  lastAutoNightCheckMs_ = nowMs;
+
+  const uint16_t minutes = nightschedule::localMinutesOfDay(
+      deviceClock_.epochNowSec(nowMs), deviceClock_.timezoneOffsetMinutes());
+  const bool night = nightschedule::isNight(minutes);
+
+  // Apply on the first evaluation and on schedule edges only, so a manual
+  // theme change holds until the next edge.
+  const bool firstEvaluation = autoNightLastState_ < 0;
+  const bool edge = !firstEvaluation && night != (autoNightLastState_ == 1);
+  autoNightLastState_ = night ? 1 : 0;
+  if (!firstEvaluation && !edge) {
+    return;
+  }
+  if (night == nightMode_) {
+    return;
+  }
+
+  if (night) {
+    autoNightPrevDark_ = darkMode_;
+    nightMode_ = true;
+    darkMode_ = true;
+  } else {
+    nightMode_ = false;
+    darkMode_ = autoNightPrevDark_;
+  }
+  preferences_.putBool(kPrefDarkMode, darkMode_);
+  preferences_.putBool(kPrefNightMode, nightMode_);
+  Serial.printf("[display] auto night -> %s (%02u:%02u)\n", night ? "night" : "day",
+                static_cast<unsigned int>(minutes / 60), static_cast<unsigned int>(minutes % 60));
+  applyDisplayPreferences(nowMs);
+  if (state_ == AppState::Menu && menu::isSettingsScreen(menuScreen_)) {
+    rebuildSettingsMenuItems();
+    renderSettings();
+  }
 }
 
 void App::cycleUiLanguage(uint32_t nowMs) {
@@ -3142,6 +3194,16 @@ void App::selectSettingsItem(uint32_t nowMs) {
         rebuildSettingsMenuItems();
         renderSettings();
         return;
+      case kSettingsDisplayAutoNightIndex:
+        autoNightEnabled_ = !autoNightEnabled_;
+        preferences_.putBool(kPrefAutoNight, autoNightEnabled_);
+        Serial.printf("[settings] auto night=%d\n", autoNightEnabled_ ? 1 : 0);
+        // Re-evaluate immediately so enabling inside the window applies now.
+        autoNightLastState_ = -1;
+        updateAutoNight(nowMs);
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -3928,6 +3990,10 @@ void App::rebuildSettingsMenuItems() {
         (imuShortcutSensorReady_ ? onOffLabel(imuShortcutsEnabled_) : String("No sensor")));
     settingsMenuItems_.push_back("Daily goal: " + dailyWordGoalLabel());
     settingsMenuItems_.push_back("Sentence while paused: " + onOffLabel(pauseContextEnabled_));
+    settingsMenuItems_.push_back(
+        "Auto night (21-07): " +
+        (deviceClock_.valid() ? onOffLabel(autoNightEnabled_)
+                              : (autoNightEnabled_ ? String("On, no clock") : onOffLabel(false))));
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());

@@ -1198,6 +1198,8 @@ String CompanionSyncManager::settingsJson() {
   body += ",\"darkMode\":" + String(preferences_.getBool(kPrefDarkMode, false) ? "true" : "false");
   body += ",\"nightMode\":" +
           String(preferences_.getBool(kPrefNightMode, false) ? "true" : "false");
+  body += ",\"autoNight\":" +
+          String(preferences_.getBool(kPrefAutoNight, false) ? "true" : "false");
   body += ",\"handedness\":\"";
   body += enumLabel(handedness, handednessLabels, 2);
   body += "\"";
@@ -1339,6 +1341,9 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
   }
   if (jsontext::readBool(body, "nightMode", boolValue)) {
     preferences_.putBool(kPrefNightMode, boolValue);
+  }
+  if (jsontext::readBool(body, "autoNight", boolValue)) {
+    preferences_.putBool(kPrefAutoNight, boolValue);
   }
   if (jsontext::readString(body, "handedness", stringValue)) {
     const int value = enumValue(stringValue, handednessLabels, 2);
