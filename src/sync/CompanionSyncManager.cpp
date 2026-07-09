@@ -75,7 +75,8 @@ const char kWebCompanionHtml[] PROGMEM = R"HTML(<!doctype html>
 :root{color-scheme:dark;--bg:#0c1110;--fg:#f5f1e8;--muted:#a7aaa0;--line:#2d3430;--card:#151b18;--accent:#78d5b1;--accentInk:#07110e;--accent2:#ff9b73;--soft:#1d2924}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top left,#18241f 0,#0c1110 38%);color:var(--fg);font:15px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 header{position:sticky;top:0;z-index:2;background:rgba(12,17,16,.92);backdrop-filter:blur(14px);border-bottom:1px solid var(--line);padding:14px 16px 10px}
-h1{font-size:1.15rem;margin:0 0 10px}.tabs{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+h1{font-size:1.15rem;margin:0 0 10px}.tabs{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
+.hm{display:inline-block;width:20px;height:20px;margin:2px;border-radius:4px;background:var(--accent)}
 button,.button{border:1px solid var(--line);border-radius:8px;background:#111714;color:var(--fg);padding:9px 11px;font:inherit}
 button.primary,.button.primary{background:var(--accent);border-color:var(--accent);color:var(--accentInk);font-weight:700}button.danger{color:var(--accent2)}
 .tabs button{white-space:nowrap;padding:8px 6px}.tabs button.active{background:var(--fg);color:var(--bg)}
@@ -95,6 +96,7 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <button data-tab="books" class="active">Books</button>
 <button data-tab="articles">Articles</button>
 <button data-tab="quotes">Quotes</button>
+<button data-tab="stats">Stats</button>
 <button data-tab="settings">Settings</button>
 <button data-tab="rss">RSS</button>
 <button data-tab="help">Help</button>
@@ -138,6 +140,15 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <p><a class="button primary" href="/api/quotes.md" download="quotes.md">Download .md</a> <button id="refreshQuotesButton">Refresh</button></p>
 </div>
 <div id="quotesList" class="muted">Loading...</div>
+</section>
+
+<section id="stats" class="page">
+<div class="card"><h2>Reading Stats</h2>
+<div id="statsSummary" class="muted">Loading...</div>
+<h3 style="margin-top:12px">Last 30 days</h3>
+<div id="heatmap" class="muted"></div>
+<p><a class="button" href="/api/stats/export" download="rsvp-stats.json">Download JSON</a> <button id="refreshStatsButton">Refresh</button></p>
+</div>
 </section>
 
 <section id="settings" class="page">
@@ -238,7 +249,9 @@ async function saveRss(){const feeds=$('rssFeeds').value.split(/\n+/).map(s=>s.t
 function titleCase(s){return String(s||'').replace(/\w\S*/g,t=>t.charAt(0).toUpperCase()+t.slice(1).toLowerCase())}
 async function loadQuotes(){try{const data=await api('/api/quotes');const quotes=data.quotes||[];if(!quotes.length){$('quotesList').innerHTML='<div class="card muted">No starred sentences yet. Star one from the reader.</div>';status('Connected to RSVP Nano.');return}const groups={};quotes.forEach(q=>{const key=q.bookPath;(groups[key]=groups[key]||{title:q.bookTitle||q.bookPath,items:[]}).items.push(q)});$('quotesList').innerHTML=Object.keys(groups).map(path=>{const g=groups[path];return `<div class="card"><h3>${html(titleCase(g.title))}</h3>${g.items.map(q=>`<div class="item"><div class="item-title">${html(q.sentence)}</div><div class="item-meta">word ${q.wordIndex}</div><p><button class="danger" data-delq="${html(encodeURIComponent(q.bookPath))}" data-delqi="${q.wordIndex}">Delete</button></p></div>`).join('')}</div>`}).join('');document.querySelectorAll('[data-delq]').forEach(b=>b.onclick=()=>delQuote(decodeURIComponent(b.dataset.delq),b.dataset.delqi));status('Connected to RSVP Nano.')}catch(e){status('Quotes load failed: '+e.message)}}
 async function delQuote(path,index){if(!confirm('Delete this starred sentence?'))return;try{await api('/api/quotes?bookPath='+encodeURIComponent(path)+'&wordIndex='+encodeURIComponent(index),{method:'DELETE'});await loadQuotes();status('Quote deleted.')}catch(e){status('Delete failed: '+e.message)}}
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss();if(b.dataset.tab==='quotes')loadQuotes()});
+async function loadStatsPage(){try{const s=await api('/api/stats');$('statsSummary').textContent=`${(s.totalWords||0).toLocaleString()} words · ${Math.round((s.totalMs||0)/60000)} min · avg ${s.averageWpm||0} WPM · ${s.booksFinished||0} finished`;const hm=$('heatmap');hm.innerHTML='';let hist=[];try{hist=(await api('/api/stats/export')).history||[]}catch(e){}if(!hist.length){hm.textContent='No daily history yet (sync the clock from Settings, then read).';return}const byDay={};let last=0;let max=1;hist.forEach(b=>{byDay[b.d]=b;if(b.d>last)last=b.d;if(b.w>max)max=b.w});for(let d=last-29;d<=last;d++){const words=byDay[d]?byDay[d].w:0;const cell=document.createElement('span');cell.className='hm';cell.style.opacity=words?String(0.25+0.75*words/max):'0.08';cell.title=new Date(d*86400000).toISOString().slice(0,10)+': '+words+' words';hm.appendChild(cell)}status('Connected to RSVP Nano.')}catch(e){status('Stats load failed: '+e.message)}}
+$('refreshStatsButton').onclick=loadStatsPage;
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss();if(b.dataset.tab==='quotes')loadQuotes();if(b.dataset.tab==='stats')loadStatsPage()});
 $('wpm').oninput=()=>{setVal('wpm',snapWpm(val('wpm')));updateLabels()};
 ['longWordMs','complexWordMs','punctuationMs','brightnessIndex','fontSizeIndex','tracking','anchorPercent','guideWidth','guideGap'].forEach(id=>$(id).oninput=updateLabels);
 $('refreshBooksButton').onclick=refresh;$('refreshArticlesButton').onclick=refresh;$('uploadBookButton').onclick=()=>uploadPicked('bookFileInput','book');$('uploadArticleButton').onclick=()=>uploadPicked('articleFileInput','article');$('syncArticleButton').onclick=syncArticle;$('saveDraftButton').onclick=saveDraft;$('saveSettingsButton').onclick=saveSettings;$('saveWifiButton').onclick=saveWifi;$('forgetWifiButton').onclick=forgetWifi;$('saveRssButton').onclick=saveRss;$('reloadRssButton').onclick=loadRss;$('refreshQuotesButton').onclick=loadQuotes;
@@ -492,6 +505,12 @@ void CompanionSyncManager::handleStatsStatic() {
   }
 }
 
+void CompanionSyncManager::handleStatsExportStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleStatsExport();
+  }
+}
+
 void CompanionSyncManager::handleTimeStatic() {
   if (instance_ != nullptr) {
     instance_->handleTime();
@@ -555,6 +574,7 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books/bookmarks", HTTP_POST, handleBookmarksStatic);
   server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
   server_.on("/api/stats", HTTP_GET, handleStatsStatic);
+  server_.on("/api/stats/export", HTTP_GET, handleStatsExportStatic);
   server_.on("/api/time", HTTP_POST, handleTimeStatic);
   server_.on("/api/time", HTTP_PUT, handleTimeStatic);
   server_.on("/api/quotes", HTTP_GET, handleQuotesStatic);
@@ -916,6 +936,22 @@ void CompanionSyncManager::handleBookmarks() {
   }
   body += "]}";
   server_.send(200, "application/json", body);
+}
+
+void CompanionSyncManager::handleStatsExport() {
+  // Streams the device's own stats file: all-time totals plus the 30-day
+  // {d(ayKey), w(ords), m(s)} history buckets, already JSON. The heatmap on
+  // the Stats tab and external tooling both read this.
+  File file = SD_MMC.open("/rsvp/.stats/stats.json", FILE_READ);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    server_.send(404, "application/json", "{\"error\":\"No stats recorded yet\"}");
+    return;
+  }
+  server_.streamFile(file, "application/json");
+  file.close();
 }
 
 void CompanionSyncManager::handleStats() {
