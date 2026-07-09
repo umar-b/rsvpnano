@@ -5,6 +5,8 @@
 
 #include <algorithm>
 
+#include "net/WifiConnection.h"
+
 namespace net {
 
 namespace {
@@ -92,9 +94,14 @@ FetchResult httpGet(const String &url, const FetchOptions &options) {
   WiFiClient plainClient;
   const bool secure = url.startsWith("https://");
   if (secure) {
-    // Release assets and feeds redirect across arbitrary hosts; pinning is a
-    // follow-up hardening step (see OtaUpdater).
-    secureClient.setInsecure();
+    if (options.caCert != nullptr && systemEpochIfValid() > 0) {
+      secureClient.setCACert(options.caCert);
+    } else {
+      if (options.caCert != nullptr) {
+        Serial.println("[net] TLS: clock not synced, skipping CA verification");
+      }
+      secureClient.setInsecure();
+    }
     secureClient.setHandshakeTimeout(kTlsHandshakeTimeoutS);
   }
 

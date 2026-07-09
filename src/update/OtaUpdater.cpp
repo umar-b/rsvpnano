@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 
+#include "net/GithubCaCerts.h"
 #include "net/HttpFetch.h"
 #include "net/WifiConnection.h"
 #include "update/ReleaseParser.h"
@@ -143,6 +144,7 @@ bool OtaUpdater::fetchLatestRelease(const Config &config, LatestRelease &release
   options.accept = "application/vnd.github+json";
   options.followRedirects = true;
   options.maxBodyBytes = kMaxReleaseJsonBytes;
+  options.caCert = net::kGithubRootCas;
   const net::FetchResult fetched = net::httpGet(url, options);
 
   if (fetched.status == net::FetchStatus::BeginFailed) {
@@ -182,6 +184,7 @@ bool OtaUpdater::resolveDownloadUrl(const String &assetUrl, const String &versio
   net::FetchOptions options;
   options.userAgent = userAgentForVersion(version);
   options.accept = "application/octet-stream";
+  options.caCert = net::kGithubRootCas;
   // maxBodyBytes 0: only the status/Location matter, the body is never read.
   const net::FetchResult fetched = net::httpGet(assetUrl, options);
 
@@ -338,9 +341,15 @@ OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallb
     }
 
     WiFiClientSecure client;
-    // Match the metadata request behavior until the update path gains certificate pinning or
-    // signature verification above the transport layer.
-    client.setInsecure();
+    // Verify against GitHub's roots once the clock is plausible; a 1970 clock
+    // would fail every certificate's date check, so fall back to unverified
+    // rather than bricking OTA before the first SNTP sync.
+    if (net::systemEpochIfValid() > 0) {
+      client.setCACert(net::kGithubRootCas);
+    } else {
+      Serial.println("[ota] TLS: clock not synced, skipping CA verification");
+      client.setInsecure();
+    }
     client.setHandshakeTimeout(15);
     // Read timeout for the body: without it, a half-open TLS connection that
     // stops sending bytes leaves HTTPUpdate spinning on a 0-byte stream forever.

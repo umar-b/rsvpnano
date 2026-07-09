@@ -18,6 +18,11 @@ struct FetchOptions {
   String userAgent;
   // Extra Accept header when non-null.
   const char *accept = nullptr;
+  // PEM root bundle to verify the server against. nullptr = no verification
+  // (arbitrary-host fetches like RSS). Verification needs a plausible system
+  // clock for the certificate dates; until SNTP has synced, the fetch falls
+  // back to unverified rather than failing on a 1970 clock.
+  const char *caCert = nullptr;
   // true: HTTPClient follows redirects itself (strict). false: a redirect
   // returns FetchStatus::Redirect with the Location header for the caller.
   bool followRedirects = false;
