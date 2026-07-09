@@ -130,6 +130,11 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <label>Article file</label><input id="articleFileInput" type="file" accept=".rsvp,.txt,.epub">
 <p><button class="primary" id="uploadArticleButton">Upload article</button></p>
 </div>
+<div class="card"><h2>Send a Link</h2>
+<p class="muted">The reader fetches and converts the page during its next RSS check (Menu &gt; RSS).</p>
+<label>URL</label><input id="sendUrlInput" placeholder="https://...">
+<p><button class="primary" id="sendUrlButton">Queue for reader</button></p>
+</div>
 </div>
 <div class="card"><h2>Articles</h2><div id="articlesList" class="muted">Loading...</div><p><button id="refreshArticlesButton">Refresh articles</button></p></div>
 </section>
@@ -251,6 +256,7 @@ async function loadQuotes(){try{const data=await api('/api/quotes');const quotes
 async function delQuote(path,index){if(!confirm('Delete this starred sentence?'))return;try{await api('/api/quotes?bookPath='+encodeURIComponent(path)+'&wordIndex='+encodeURIComponent(index),{method:'DELETE'});await loadQuotes();status('Quote deleted.')}catch(e){status('Delete failed: '+e.message)}}
 async function loadStatsPage(){try{const s=await api('/api/stats');$('statsSummary').textContent=`${(s.totalWords||0).toLocaleString()} words · ${Math.round((s.totalMs||0)/60000)} min · avg ${s.averageWpm||0} WPM · ${s.booksFinished||0} finished`;const hm=$('heatmap');hm.innerHTML='';let hist=[];try{hist=(await api('/api/stats/export')).history||[]}catch(e){}if(!hist.length){hm.textContent='No daily history yet (sync the clock from Settings, then read).';return}const byDay={};let last=0;let max=1;hist.forEach(b=>{byDay[b.d]=b;if(b.d>last)last=b.d;if(b.w>max)max=b.w});for(let d=last-29;d<=last;d++){const words=byDay[d]?byDay[d].w:0;const cell=document.createElement('span');cell.className='hm';cell.style.opacity=words?String(0.25+0.75*words/max):'0.08';cell.title=new Date(d*86400000).toISOString().slice(0,10)+': '+words+' words';hm.appendChild(cell)}status('Connected to RSVP Nano.')}catch(e){status('Stats load failed: '+e.message)}}
 $('refreshStatsButton').onclick=loadStatsPage;
+$('sendUrlButton').onclick=async()=>{const u=$('sendUrlInput').value.trim();if(!u){status('Enter a URL first.');return}try{const r=await api('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:u})});$('sendUrlInput').value='';status(r.alreadyQueued?'Already queued.':'Link queued. Run an RSS check on the reader to fetch it.')}catch(e){status('Queue failed: '+e.message)}};
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button,.page').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.tab).classList.add('active');if(b.dataset.tab==='settings'){loadSettings();loadWifi()}if(b.dataset.tab==='rss')loadRss();if(b.dataset.tab==='quotes')loadQuotes();if(b.dataset.tab==='stats')loadStatsPage()});
 $('wpm').oninput=()=>{setVal('wpm',snapWpm(val('wpm')));updateLabels()};
 ['longWordMs','complexWordMs','punctuationMs','brightnessIndex','fontSizeIndex','tracking','anchorPercent','guideWidth','guideGap'].forEach(id=>$(id).oninput=updateLabels);
@@ -511,6 +517,12 @@ void CompanionSyncManager::handleStatsExportStatic() {
   }
 }
 
+void CompanionSyncManager::handleSendUrlStatic() {
+  if (instance_ != nullptr) {
+    instance_->handleSendUrl();
+  }
+}
+
 void CompanionSyncManager::handleTimeStatic() {
   if (instance_ != nullptr) {
     instance_->handleTime();
@@ -575,6 +587,7 @@ bool CompanionSyncManager::startServer() {
   server_.on("/api/books/bookmarks", HTTP_DELETE, handleBookmarksStatic);
   server_.on("/api/stats", HTTP_GET, handleStatsStatic);
   server_.on("/api/stats/export", HTTP_GET, handleStatsExportStatic);
+  server_.on("/api/send", HTTP_POST, handleSendUrlStatic);
   server_.on("/api/time", HTTP_POST, handleTimeStatic);
   server_.on("/api/time", HTTP_PUT, handleTimeStatic);
   server_.on("/api/quotes", HTTP_GET, handleQuotesStatic);
@@ -952,6 +965,63 @@ void CompanionSyncManager::handleStatsExport() {
   }
   server_.streamFile(file, "application/json");
   file.close();
+}
+
+void CompanionSyncManager::handleSendUrl() {
+  // Queue a URL for the reader to fetch on its next RSS check. The device is
+  // a softAP during sync (no internet), so the fetch cannot happen here.
+  String url;
+  if (!jsontext::readString(server_.arg("plain"), "url", url)) {
+    server_.send(400, "application/json", "{\"ok\":false,\"error\":\"Missing url\"}");
+    return;
+  }
+  url.trim();
+  if (!isHttpUrl(url) || url.length() > 512 || url.indexOf('\n') >= 0 ||
+      url.indexOf('\r') >= 0) {
+    server_.send(400, "application/json",
+                 "{\"ok\":false,\"error\":\"URL must start with http:// or https://\"}");
+    return;
+  }
+
+  size_t queued = 0;
+  {
+    File existing = SD_MMC.open("/config/sendqueue.txt", FILE_READ);
+    if (existing && !existing.isDirectory()) {
+      while (existing.available()) {
+        String line = existing.readStringUntil('\n');
+        line.trim();
+        if (line.isEmpty()) {
+          continue;
+        }
+        ++queued;
+        if (line == url) {
+          existing.close();
+          server_.send(200, "application/json", "{\"ok\":true,\"alreadyQueued\":true}");
+          return;
+        }
+      }
+    }
+    if (existing) {
+      existing.close();
+    }
+  }
+  if (queued >= 12) {
+    server_.send(429, "application/json",
+                 "{\"ok\":false,\"error\":\"Queue full - run an RSS check on the reader\"}");
+    return;
+  }
+
+  SD_MMC.mkdir("/config");
+  File file = SD_MMC.open("/config/sendqueue.txt", FILE_APPEND);
+  if (!file) {
+    server_.send(500, "application/json", "{\"ok\":false,\"error\":\"SD write failed\"}");
+    return;
+  }
+  file.println(url);
+  file.close();
+  Serial.printf("[sync] queued send: %s\n", url.c_str());
+  server_.send(200, "application/json",
+               "{\"ok\":true,\"queued\":" + String(static_cast<unsigned int>(queued + 1)) + "}");
 }
 
 void CompanionSyncManager::handleStats() {

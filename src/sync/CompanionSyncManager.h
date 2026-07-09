@@ -46,6 +46,7 @@ class CompanionSyncManager {
   static void handleBookmarksStatic();
   static void handleStatsStatic();
   static void handleStatsExportStatic();
+  static void handleSendUrlStatic();
   static void handleTimeStatic();
   static void handleQuotesStatic();
   static void handleQuotesMarkdownStatic();
@@ -67,6 +68,7 @@ class CompanionSyncManager {
   void handleBookmarks();
   void handleStats();
   void handleStatsExport();
+  void handleSendUrl();
   void handleTime();
   void handleQuotes();
   void handleQuotesMarkdown();

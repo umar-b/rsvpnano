@@ -34,6 +34,12 @@ constexpr uint8_t kMaxFeedRedirects = 3;
 constexpr size_t kFullTextSummaryChars = 1500;
 constexpr size_t kMaxFullTextWords = 20000;
 constexpr size_t kMinFullTextWords = 120;
+// Send-to-device: URLs queued by the companion, fetched on the next check.
+constexpr const char *kSendQueuePath = "/config/sendqueue.txt";
+constexpr uint8_t kMaxQueuedSends = 12;
+// The user explicitly asked for this page, so accept much thinner extractions
+// than the feed full-text path does.
+constexpr size_t kMinSentWords = 20;
 
 String trimCopy(String value) {
   value.trim();
@@ -52,6 +58,59 @@ bool isSafeFilenameChar(char c) {
 }
 
 String userAgent() { return String("RSVP-Nano-RSS/1.0"); }
+
+net::FetchOptions articlePageFetchOptions() {
+  net::FetchOptions options;
+  options.userAgent = userAgent();
+  options.followRedirects = true;
+  options.maxBodyBytes = kMaxFeedBytes;
+  options.reserveBytes = 8192;
+  options.totalTimeoutMs = kFeedTotalTimeoutMs;
+  options.idleTimeoutMs = kFeedIdleTimeoutMs;
+  return options;
+}
+
+// Streams fetched page HTML through the epubconvert writer into .rsvp body
+// text. wordCount reports how much readable text survived extraction.
+bool convertHtmlToRsvp(const String &html, String &rsvpBody, size_t &wordCount) {
+  rsvpBody = "";
+  rsvpBody.reserve(8192);
+  wordCount = 0;
+  String lastChapterTitle;
+  epubconvert::RsvpWriter writer(
+      [&rsvpBody](const char *data, size_t length) {
+        for (size_t i = 0; i < length; ++i) {
+          rsvpBody += data[i];
+        }
+      },
+      wordCount, kMaxFullTextWords, lastChapterTitle, [] {
+        yield();
+        delay(0);
+      });
+  if (writer.write(reinterpret_cast<const uint8_t *>(html.c_str()), html.length())) {
+    writer.finish();
+  }
+  return wordCount > 0;
+}
+
+// The page's <title> text, or "" when absent/unreadable.
+String pageTitle(const String &html) {
+  String lowered = html.substring(0, std::min<size_t>(html.length(), 4096));
+  lowered.toLowerCase();
+  const int openAt = lowered.indexOf("<title");
+  if (openAt < 0) {
+    return "";
+  }
+  const int openEnd = lowered.indexOf('>', openAt);
+  if (openEnd < 0) {
+    return "";
+  }
+  const int closeAt = lowered.indexOf("</title", openEnd);
+  if (closeAt < 0) {
+    return "";
+  }
+  return epubconvert::plainTextFromXmlFragment(html.substring(openEnd + 1, closeAt));
+}
 
 String feedProgressLabel(uint8_t feedIndex, uint8_t feedCount) {
   return "Feed " + String(feedIndex) + "/" + String(feedCount);
@@ -163,6 +222,10 @@ RssFeedManager::Result RssFeedManager::checkFeeds(const OtaUpdater::Config &wifi
     return result;
   }
 
+  // Links queued by the companion's "send to reader" while the device had no
+  // internet; they piggyback on this check's Wi-Fi session.
+  const std::vector<String> queuedSends = readSendQueue();
+
   File config;
   for (const char *path : kConfigPaths) {
     config = SD_MMC.open(path);
@@ -174,39 +237,33 @@ RssFeedManager::Result RssFeedManager::checkFeeds(const OtaUpdater::Config &wifi
     }
   }
 
-  if (!config || config.isDirectory()) {
-    if (config) {
-      config.close();
-    }
-    disconnectWiFi();
-    result.summary = "No feeds";
-    result.detail = "/config/rss.conf";
-    return result;
-  }
-
   std::vector<String> feeds;
   feeds.reserve(kMaxFeedsPerCheck);
-  while (config.available() && feeds.size() < kMaxFeedsPerCheck) {
-    String line = config.readStringUntil('\n');
-    line.trim();
-    if (line.isEmpty() || line.startsWith("#")) {
-      continue;
-    }
-    if (line.startsWith("feed=")) {
-      line = line.substring(5);
+  if (config && !config.isDirectory()) {
+    while (config.available() && feeds.size() < kMaxFeedsPerCheck) {
+      String line = config.readStringUntil('\n');
       line.trim();
-    }
-    if (!startsWithHttp(line)) {
-      continue;
-    }
+      if (line.isEmpty() || line.startsWith("#")) {
+        continue;
+      }
+      if (line.startsWith("feed=")) {
+        line = line.substring(5);
+        line.trim();
+      }
+      if (!startsWithHttp(line)) {
+        continue;
+      }
 
-    feeds.push_back(line);
+      feeds.push_back(line);
+    }
   }
-  config.close();
+  if (config) {
+    config.close();
+  }
 
-  if (feeds.empty()) {
+  if (feeds.empty() && queuedSends.empty()) {
     disconnectWiFi();
-    result.summary = "No feed URLs";
+    result.summary = "No feeds";
     result.detail = "/config/rss.conf";
     return result;
   }
@@ -243,9 +300,11 @@ RssFeedManager::Result RssFeedManager::checkFeeds(const OtaUpdater::Config &wifi
     processFeed(line, feedBody, preferences, result, displayIndex, feedCount, callback, context);
   }
 
+  processSendQueue(queuedSends, preferences, result, callback, context);
+
   disconnectWiFi();
 
-  if (result.feedsChecked == 0) {
+  if (!feeds.empty() && result.feedsChecked == 0 && result.articlesSaved == 0) {
     result.summary = "Feeds unavailable";
     result.detail =
         mixedFeedErrors || firstFeedError.isEmpty() ? "Check feed URLs" : firstFeedError;
@@ -416,6 +475,16 @@ bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &pre
                            item.body.length() < kFullTextSummaryChars &&
                            fetchFullArticleRsvp(item, fullBody);
 
+  if (!writeArticleFile(item, useFullText ? &fullBody : nullptr)) {
+    return false;
+  }
+
+  markItemSeen(item, preferences);
+  ++result.articlesSaved;
+  return true;
+}
+
+bool RssFeedManager::writeArticleFile(const feedparser::FeedItem &item, const String *rsvpBody) {
   SD_MMC.mkdir(kBooksPath);
   SD_MMC.mkdir(kArticleFilesPath);
   const String finalPath = String(kArticleFilesPath) + "/" + filenameForItem(item);
@@ -440,8 +509,8 @@ bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &pre
   }
   file.println();
 
-  if (useFullText) {
-    file.print(fullBody);
+  if (rsvpBody != nullptr) {
+    file.print(*rsvpBody);
   } else {
     String body = item.body;
     if (body.length() > kMaxArticleChars) {
@@ -459,9 +528,80 @@ bool RssFeedManager::saveItem(const feedparser::FeedItem &item, Preferences &pre
     return false;
   }
 
+  Serial.printf("[rss] saved %s\n", finalPath.c_str());
+  return true;
+}
+
+std::vector<String> RssFeedManager::readSendQueue() {
+  std::vector<String> urls;
+  File file = SD_MMC.open(kSendQueuePath);
+  if (!file || file.isDirectory()) {
+    if (file) {
+      file.close();
+    }
+    return urls;
+  }
+  while (file.available() && urls.size() < kMaxQueuedSends) {
+    String line = file.readStringUntil('\n');
+    line.trim();
+    if (startsWithHttp(line)) {
+      urls.push_back(line);
+    }
+  }
+  file.close();
+  return urls;
+}
+
+void RssFeedManager::processSendQueue(const std::vector<String> &urls, Preferences &preferences,
+                                      Result &result, StatusCallback callback, void *context) {
+  if (urls.empty()) {
+    return;
+  }
+
+  for (size_t i = 0; i < urls.size(); ++i) {
+    report(callback, context, "Sent link " + String(i + 1) + "/" + String(urls.size()),
+           feedparser::hostLabelForUrl(urls[i]), 80);
+    saveSentUrl(urls[i], preferences, result);
+  }
+
+  // Processed in full; failures were logged and are dropped rather than
+  // retried forever (the companion can re-send).
+  SD_MMC.remove(kSendQueuePath);
+}
+
+bool RssFeedManager::saveSentUrl(const String &url, Preferences &preferences, Result &result) {
+  const net::FetchResult page = net::httpGet(url, articlePageFetchOptions());
+  if (page.status != net::FetchStatus::Ok || page.body.isEmpty()) {
+    Serial.printf("[rss] sent-link fetch failed status=%d url=%s\n",
+                  static_cast<int>(page.status), url.c_str());
+    return false;
+  }
+
+  String rsvpBody;
+  size_t wordCount = 0;
+  convertHtmlToRsvp(page.body, rsvpBody, wordCount);
+  if (wordCount < kMinSentWords) {
+    Serial.printf("[rss] sent-link extraction thin (%u words): %s\n",
+                  static_cast<unsigned int>(wordCount), url.c_str());
+    return false;
+  }
+
+  feedparser::FeedItem item;
+  item.link = url;
+  item.title = pageTitle(page.body);
+  if (item.title.isEmpty()) {
+    item.title = feedparser::hostLabelForUrl(url);
+  }
+
+  if (!writeArticleFile(item, &rsvpBody)) {
+    return false;
+  }
+
+  // Mark seen so the same URL arriving later via a feed is not saved twice.
   markItemSeen(item, preferences);
   ++result.articlesSaved;
-  Serial.printf("[rss] saved %s\n", finalPath.c_str());
+  Serial.printf("[rss] sent link saved (%u words): %s\n",
+                static_cast<unsigned int>(wordCount), url.c_str());
   return true;
 }
 
@@ -470,37 +610,15 @@ bool RssFeedManager::fetchFullArticleRsvp(const feedparser::FeedItem &item, Stri
     return false;
   }
 
-  net::FetchOptions options;
-  options.userAgent = userAgent();
-  options.followRedirects = true;
-  options.maxBodyBytes = kMaxFeedBytes;
-  options.reserveBytes = 8192;
-  options.totalTimeoutMs = kFeedTotalTimeoutMs;
-  options.idleTimeoutMs = kFeedIdleTimeoutMs;
-  const net::FetchResult page = net::httpGet(item.link, options);
+  const net::FetchResult page = net::httpGet(item.link, articlePageFetchOptions());
   if (page.status != net::FetchStatus::Ok || page.body.isEmpty()) {
     Serial.printf("[rss] full-text fetch failed status=%d url=%s\n",
                   static_cast<int>(page.status), item.link.c_str());
     return false;
   }
 
-  rsvpBody = "";
-  rsvpBody.reserve(8192);
   size_t wordCount = 0;
-  String lastChapterTitle;
-  epubconvert::RsvpWriter writer(
-      [&rsvpBody](const char *data, size_t length) {
-        for (size_t i = 0; i < length; ++i) {
-          rsvpBody += data[i];
-        }
-      },
-      wordCount, kMaxFullTextWords, lastChapterTitle, [] {
-        yield();
-        delay(0);
-      });
-  if (writer.write(reinterpret_cast<const uint8_t *>(page.body.c_str()), page.body.length())) {
-    writer.finish();
-  }
+  convertHtmlToRsvp(page.body, rsvpBody, wordCount);
 
   if (wordCount < kMinFullTextWords) {
     Serial.printf("[rss] full-text extraction thin (%u words), keeping summary: %s\n",

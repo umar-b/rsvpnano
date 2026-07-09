@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <Preferences.h>
 
+#include <vector>
+
 #include "rss/FeedParser.h"
 #include "update/OtaUpdater.h"
 
@@ -34,6 +36,16 @@ class RssFeedManager {
   // epubconvert writer. False when the fetch fails or extraction yields too
   // few words to beat the feed's own summary.
   bool fetchFullArticleRsvp(const feedparser::FeedItem &item, String &rsvpBody);
+  // Writes the article file (header + body). rsvpBody non-null = already
+  // converted .rsvp text; null = item.body as a truncated plain summary.
+  bool writeArticleFile(const feedparser::FeedItem &item, const String *rsvpBody);
+  // Send-to-device queue (/config/sendqueue.txt, one URL per line, written by
+  // the companion's POST /api/send while the device had no internet). Each
+  // URL is fetched and converted like a full-text article on the next check.
+  std::vector<String> readSendQueue();
+  void processSendQueue(const std::vector<String> &urls, Preferences &preferences, Result &result,
+                        StatusCallback callback, void *context);
+  bool saveSentUrl(const String &url, Preferences &preferences, Result &result);
   bool itemAlreadySeen(const feedparser::FeedItem &item, Preferences &preferences);
   void markItemSeen(const feedparser::FeedItem &item, Preferences &preferences);
   String seenKeyForItem(const feedparser::FeedItem &item) const;
