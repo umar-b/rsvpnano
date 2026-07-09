@@ -103,6 +103,55 @@ void test_sample_cadence() {
   TEST_ASSERT_TRUE(low.sampleIntervalMs(false) < healthy);  // low battery polls faster
 }
 
+// Runtime estimate: a measured drain (>=3% drop over >=10 min from the
+// anchor) yields displayedPercent * minutes-per-percent.
+void test_runtime_estimate_from_measured_drain() {
+  Monitor m;
+  m.update(0, true, 4.00f, 80, false);  // seeds anchor at 80% @ t=0
+  TEST_ASSERT_FALSE(m.runtimeEstimateReady());
+
+  // Steady raw 70% over 100 minutes; the filter converges and display snaps
+  // on each forced update.
+  for (uint32_t i = 1; i <= 10; ++i) {
+    m.update(i * 10 * kMinute, true, 3.90f, 70, true);
+  }
+
+  TEST_ASSERT_TRUE(m.runtimeEstimateReady());
+  // 10% drop over 100 minutes -> 10 min/% -> 70% remaining = 700 minutes.
+  TEST_ASSERT_EQUAL_UINT32(700, m.runtimeMinutesRemaining());
+}
+
+void test_runtime_not_ready_before_drop_and_time_gates() {
+  Monitor m;
+  m.update(0, true, 4.00f, 80, false);
+
+  // Big drop but only 5 minutes elapsed: time gate fails.
+  m.update(5 * kMinute, true, 3.80f, 60, true);
+  TEST_ASSERT_FALSE(m.runtimeEstimateReady());
+
+  Monitor slow;
+  slow.update(0, true, 4.00f, 80, false);
+  // Long elapsed but only 1% drop: drop gate fails.
+  slow.update(60 * kMinute, true, 3.99f, 79, true);
+  TEST_ASSERT_FALSE(slow.runtimeEstimateReady());
+}
+
+void test_charging_resets_runtime_anchor() {
+  Monitor m;
+  m.update(0, true, 4.00f, 80, false);
+  for (uint32_t i = 1; i <= 10; ++i) {
+    m.update(i * 10 * kMinute, true, 3.90f, 70, true);
+  }
+  TEST_ASSERT_TRUE(m.runtimeEstimateReady());
+
+  // Charger plugged in: percent climbs past the anchor, invalidating the
+  // drain measurement.
+  for (uint32_t i = 0; i < 4; ++i) {
+    m.update((110 + i) * kMinute, true, 4.15f, 100, true);
+  }
+  TEST_ASSERT_FALSE(m.runtimeEstimateReady());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_first_sample_seeds_directly);
@@ -114,5 +163,8 @@ int main(void) {
   RUN_TEST(test_healthy_no_action);
   RUN_TEST(test_absent_clears_state);
   RUN_TEST(test_sample_cadence);
+  RUN_TEST(test_runtime_estimate_from_measured_drain);
+  RUN_TEST(test_runtime_not_ready_before_drop_and_time_gates);
+  RUN_TEST(test_charging_resets_runtime_anchor);
   return UNITY_END();
 }
