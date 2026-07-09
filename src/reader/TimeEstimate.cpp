@@ -1,6 +1,7 @@
 #include "reader/TimeEstimate.h"
 
 #include <algorithm>
+#include <cstdio>
 
 namespace timeestimate {
 
@@ -17,6 +18,14 @@ uint32_t baseMs(size_t startIndex, size_t endIndex, size_t wordCount, uint32_t w
 
   return static_cast<uint32_t>((static_cast<uint64_t>(endIndex - startIndex) * 60000ULL) /
                                static_cast<uint64_t>(wpm));
+}
+
+String formatClock(uint16_t minutesOfDay) {
+  const unsigned hours = (minutesOfDay / 60u) % 24u;
+  const unsigned minutes = minutesOfDay % 60u;
+  char buffer[8];
+  std::snprintf(buffer, sizeof(buffer), "%u:%02u", hours, minutes);
+  return String(buffer);
 }
 
 String formatRemaining(uint32_t remainingMs) {

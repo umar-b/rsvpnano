@@ -56,6 +56,14 @@ void test_format_minutes_hours_days() {
   TEST_ASSERT_EQUAL_STRING("2d4h", timeestimate::formatRemaining(52UL * 3600000UL).c_str());
 }
 
+void test_format_clock_24h_zero_padded_minutes() {
+  TEST_ASSERT_EQUAL_STRING("21:42", timeestimate::formatClock(21 * 60 + 42).c_str());
+  TEST_ASSERT_EQUAL_STRING("9:05", timeestimate::formatClock(9 * 60 + 5).c_str());
+  TEST_ASSERT_EQUAL_STRING("0:00", timeestimate::formatClock(0).c_str());
+  // Past-midnight wrap: 24:30 -> 0:30.
+  TEST_ASSERT_EQUAL_STRING("0:30", timeestimate::formatClock(24 * 60 + 30).c_str());
+}
+
 void test_build_steps_toward_valid() {
   timeestimate::PrefixCache cache;
   // 600 words -> 3 blocks of 256/256/88.
@@ -118,6 +126,7 @@ int main(int, char **) {
   RUN_TEST(test_base_ms_scales_with_wpm);
   RUN_TEST(test_format_sub_minute_rounds_to_zero);
   RUN_TEST(test_format_minutes_hours_days);
+  RUN_TEST(test_format_clock_24h_zero_padded_minutes);
   RUN_TEST(test_build_steps_toward_valid);
   RUN_TEST(test_bonus_is_zero_before_build_completes);
   RUN_TEST(test_bonus_full_range_matches_linear_sum);

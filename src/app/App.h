@@ -108,6 +108,8 @@ class App {
     BookTime = 2,
     // Appended; persisted in NVS, never renumber. Current WPM vs all-time avg.
     PaceVsAverage = 3,
+    // Wall-clock chapter finish ("BY 21:42"); needs a valid device clock.
+    ChapterClock = 4,
   };
 
   enum class BatteryLabelMode : uint8_t {

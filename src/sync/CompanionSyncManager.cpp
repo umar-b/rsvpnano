@@ -154,7 +154,7 @@ ul{padding-left:20px}code{background:var(--soft);border-radius:4px;padding:1px 4
 <label>Display mode</label><select id="displayMode"><option value="dark">Dark</option><option value="light">Light</option><option value="night">Night</option></select>
 <label>Brightness <span id="brightnessValue"></span></label><input id="brightnessIndex" type="range" min="0" max="4">
 <label>Reader hand</label><select id="handedness"><option value="right">Right</option><option value="left">Left</option></select>
-<label>Footer label</label><select id="footerMetric"><option value="percentage">Percentage</option><option value="chapter_time">Chapter time</option><option value="book_time">Book time</option></select>
+<label>Footer label</label><select id="footerMetric"><option value="percentage">Percentage</option><option value="chapter_time">Chapter time</option><option value="book_time">Book time</option><option value="pace">Pace vs average</option><option value="finish_by">Finish by</option></select>
 <label>Battery label</label><select id="batteryLabel"><option value="percent">Percentage</option><option value="time_remaining">Time remaining</option><option value="voltage">Voltage</option></select>
 <label><input id="readingBattery" type="checkbox" style="width:auto"> Show battery while reading</label>
 <label><input id="readingChapter" type="checkbox" style="width:auto"> Show chapter while reading</label>
@@ -1129,7 +1129,8 @@ void CompanionSyncManager::handleNotFound() {
 String CompanionSyncManager::settingsJson() {
   static const char *const readerModeLabels[] = {"rsvp", "scroll"};
   static const char *const handednessLabels[] = {"right", "left"};
-  static const char *const footerMetricLabels[] = {"percentage", "chapter_time", "book_time"};
+  static const char *const footerMetricLabels[] = {"percentage", "chapter_time", "book_time",
+                                                   "pace", "finish_by"};
   static const char *const batteryLabelLabels[] = {"percent", "time_remaining", "voltage"};
   static const char *const typefaceLabels[] = {"standard", "open_dyslexic", "atkinson"};
   static const char *const pauseModeLabels[] = {"sentence_end", "instant"};
@@ -1204,7 +1205,7 @@ String CompanionSyncManager::settingsJson() {
   body += enumLabel(handedness, handednessLabels, 2);
   body += "\"";
   body += ",\"footerMetric\":\"";
-  body += enumLabel(footerMetric, footerMetricLabels, 3);
+  body += enumLabel(footerMetric, footerMetricLabels, 5);
   body += "\"";
   body += ",\"batteryLabel\":\"";
   body += enumLabel(batteryLabel, batteryLabelLabels, 3);
@@ -1275,7 +1276,8 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
 
   static const char *const readerModeLabels[] = {"rsvp", "scroll"};
   static const char *const handednessLabels[] = {"right", "left"};
-  static const char *const footerMetricLabels[] = {"percentage", "chapter_time", "book_time"};
+  static const char *const footerMetricLabels[] = {"percentage", "chapter_time", "book_time",
+                                                   "pace", "finish_by"};
   static const char *const batteryLabelLabels[] = {"percent", "time_remaining", "voltage"};
   static const char *const typefaceLabels[] = {"standard", "open_dyslexic", "atkinson"};
   static const char *const pauseModeLabels[] = {"sentence_end", "instant"};
@@ -1354,7 +1356,7 @@ bool CompanionSyncManager::applySettingsJson(const String &body, String &error) 
     preferences_.putUChar(kPrefHandedness, static_cast<uint8_t>(value));
   }
   if (jsontext::readString(body, "footerMetric", stringValue)) {
-    const int value = enumValue(stringValue, footerMetricLabels, 3);
+    const int value = enumValue(stringValue, footerMetricLabels, 5);
     if (value < 0) {
       error = "footerMetric must be percentage, chapter_time, or book_time";
       return false;

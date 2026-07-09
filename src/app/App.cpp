@@ -589,6 +589,9 @@ void App::begin() {
     case static_cast<uint8_t>(FooterMetricMode::PaceVsAverage):
       footerMetricMode_ = FooterMetricMode::PaceVsAverage;
       break;
+    case static_cast<uint8_t>(FooterMetricMode::ChapterClock):
+      footerMetricMode_ = FooterMetricMode::ChapterClock;
+      break;
     case static_cast<uint8_t>(FooterMetricMode::Percentage):
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
@@ -1427,6 +1430,9 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
     case static_cast<uint8_t>(FooterMetricMode::PaceVsAverage):
       footerMetricMode_ = FooterMetricMode::PaceVsAverage;
       break;
+    case static_cast<uint8_t>(FooterMetricMode::ChapterClock):
+      footerMetricMode_ = FooterMetricMode::ChapterClock;
+      break;
     case static_cast<uint8_t>(FooterMetricMode::Percentage):
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
@@ -1961,6 +1967,11 @@ bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
       footerMetricMode_ = FooterMetricMode::PaceVsAverage;
       break;
     case FooterMetricMode::PaceVsAverage:
+      // Wall-clock finish needs a clock; skip the mode until one is set.
+      footerMetricMode_ =
+          deviceClock_.valid() ? FooterMetricMode::ChapterClock : FooterMetricMode::Percentage;
+      break;
+    case FooterMetricMode::ChapterClock:
     default:
       footerMetricMode_ = FooterMetricMode::Percentage;
       break;
@@ -1979,6 +1990,9 @@ bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
       break;
     case FooterMetricMode::PaceVsAverage:
       modeName = "pace";
+      break;
+    case FooterMetricMode::ChapterClock:
+      modeName = "clock";
       break;
     case FooterMetricMode::Percentage:
     default:
@@ -3072,6 +3086,13 @@ void App::selectSettingsItem(uint32_t nowMs) {
             footerMetricMode_ = FooterMetricMode::BookTime;
             break;
           case FooterMetricMode::BookTime:
+            footerMetricMode_ = FooterMetricMode::PaceVsAverage;
+            break;
+          case FooterMetricMode::PaceVsAverage:
+            footerMetricMode_ = deviceClock_.valid() ? FooterMetricMode::ChapterClock
+                                                     : FooterMetricMode::Percentage;
+            break;
+          case FooterMetricMode::ChapterClock:
             footerMetricMode_ = FooterMetricMode::Percentage;
             break;
         }
@@ -7217,7 +7238,8 @@ String App::currentFooterMetricLabel() const {
       accurateTimeEstimateEnabled_ && timeEstimateBuildMatchesCurrentBook();
   const int generatingPercent = generatingEstimate ? timeEstimate_.buildProgressPercent() : 0;
 
-  if (footerMetricMode_ == FooterMetricMode::ChapterTime) {
+  if (footerMetricMode_ == FooterMetricMode::ChapterTime ||
+      footerMetricMode_ == FooterMetricMode::ChapterClock) {
     const size_t chapterIndex = currentChapterIndex();
     if (chapterIndex < chapterMarkers_.size() && chapterIndex + 1 < chapterMarkers_.size()) {
       endIndex = chapterMarkers_[chapterIndex + 1].wordIndex;
@@ -7225,8 +7247,14 @@ String App::currentFooterMetricLabel() const {
     if (generatingEstimate) {
       return String("CH ") + String(generatingPercent) + "% gen";
     }
-    return String("CH ") +
-           formatReadingTimeRemaining(estimatedReadingTimeRemainingMs(currentIndex, endIndex));
+    const uint32_t remainingMs = estimatedReadingTimeRemainingMs(currentIndex, endIndex);
+    if (footerMetricMode_ == FooterMetricMode::ChapterClock && deviceClock_.valid()) {
+      const int64_t finishEpochSec = deviceClock_.epochNowSec(millis()) + remainingMs / 1000UL;
+      return String("BY ") + timeestimate::formatClock(nightschedule::localMinutesOfDay(
+                                 finishEpochSec, deviceClock_.timezoneOffsetMinutes()));
+    }
+    // ChapterClock without a valid clock degrades to the chapter-time label.
+    return String("CH ") + formatReadingTimeRemaining(remainingMs);
   }
 
   if (generatingEstimate) {
@@ -7260,6 +7288,8 @@ String App::footerMetricModeLabel() const {
       return "Book time";
     case FooterMetricMode::PaceVsAverage:
       return "Pace vs average";
+    case FooterMetricMode::ChapterClock:
+      return "Finish by";
     case FooterMetricMode::Percentage:
     default:
       return "Percent read";

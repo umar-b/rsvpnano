@@ -29,6 +29,10 @@ uint32_t baseMs(size_t startIndex, size_t endIndex, size_t wordCount, uint32_t w
 // "0m", "12m", "3h", "3h5m", "2d", "2d4h" -- sub-minute rounds down to "0m".
 String formatRemaining(uint32_t remainingMs);
 
+// 24h wall-clock label for minutes-since-local-midnight: "21:42", "9:05".
+// Minutes past a day wrap.
+String formatClock(uint16_t minutesOfDay);
+
 // Prefix-sum cache over word-pacing bonuses. Built in blocks so the caller
 // can spread the work across update ticks; once valid, bonusMs() answers
 // range queries touching at most 2*kBlockWords words directly.
