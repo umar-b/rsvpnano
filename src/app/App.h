@@ -35,6 +35,7 @@
 #include "storage/BookProgress.h"
 #include "reader/AdaptivePace.h"
 #include "time/DeviceClock.h"
+#include "storage/DictionaryStore.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
 #include "timer/FocusTimer.h"
@@ -96,6 +97,7 @@ class App {
     Scrub,
     BrowseScroll,
     Wpm,
+    Dictionary,
   };
 
   // Menu screens live in the pure `menu` module so the navigation logic is
@@ -256,6 +258,8 @@ class App {
   void starCurrentSentence(uint32_t nowMs);
   void showStarOverlay(const String &line, uint32_t nowMs);
   void updateStarOverlay(uint32_t nowMs);
+  void showDictionaryOverlay(uint32_t nowMs);
+  void updateDictionaryOverlay(uint32_t nowMs);
   bool isActivelyReading() const;
   bool readerFooterVisible() const;
   DisplayManager::ReaderChrome readerChrome() const;
@@ -587,6 +591,7 @@ class App {
   Preferences preferences_;
   BookProgress bookProgress_{preferences_};
   QuoteStore quoteStore_;
+  DictionaryStore dictionary_;
   stats::ReadingStats readingStats_;
   stats::StatsHistory statsHistory_;
   // Unlocked-achievement bitmask (stats::Achievement bits), persisted to NVS.
@@ -614,6 +619,8 @@ class App {
   uint32_t batteryWarningRestoreAtMs_ = 0;
   uint32_t starOverlayUntilMs_ = 0;
   bool starOverlayVisible_ = false;
+  uint32_t dictionaryOverlayUntilMs_ = 0;
+  bool dictionaryOverlayVisible_ = false;
   // Achievement-unlock overlay: a brief "Achievement: <name>" banner over the
   // reader, mirroring the star/WPM overlays. One-shot, dismissed by timeout.
   uint32_t achievementOverlayUntilMs_ = 0;

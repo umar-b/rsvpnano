@@ -713,6 +713,9 @@ void App::begin() {
 
   display_.renderProgress("SD", "Loading books", "Use SD converter for EPUB", 0);
   storageReady_ = storage_.begin();
+  if (storageReady_) {
+    dictionary_.begin();  // optional /dict/ card asset; absent = unavailable
+  }
   loadDeviceClock();
   loadReadingStats();
   loadAchievements();
@@ -845,6 +848,7 @@ void App::update(uint32_t nowMs) {
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
   updateStarOverlay(nowMs);
+  updateDictionaryOverlay(nowMs);
   updateAchievementOverlay(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
@@ -1972,6 +1976,52 @@ void App::updateStarOverlay(uint32_t nowMs) {
   }
 }
 
+void App::showDictionaryOverlay(uint32_t nowMs) {
+  constexpr uint32_t kDictionaryOverlayMs = 6000;
+  constexpr size_t kDefinitionLineChars = 44;
+
+  const String word = reader_.currentWord();
+  const String definition = dictionary_.lookup(word);
+
+  // renderStatus draws two unwrapped tiny lines; split the definition at a
+  // word boundary and truncate the remainder.
+  String line1 = definition;
+  String line2;
+  if (definition.isEmpty()) {
+    line1 = "Not in dictionary";
+  } else if (definition.length() > kDefinitionLineChars) {
+    int split = static_cast<int>(kDefinitionLineChars);
+    while (split > 0 && definition[split] != ' ') {
+      --split;
+    }
+    if (split == 0) {
+      split = static_cast<int>(kDefinitionLineChars);
+    }
+    line1 = definition.substring(0, split);
+    line2 = definition.substring(split);
+    line2.trim();
+    if (line2.length() > kDefinitionLineChars) {
+      line2 = line2.substring(0, kDefinitionLineChars - 3) + "...";
+    }
+  }
+
+  dictionaryOverlayVisible_ = true;
+  dictionaryOverlayUntilMs_ = nowMs + kDictionaryOverlayMs;
+  applyReaderUiOrientation();
+  display_.renderStatus(word, line1, line2);
+  Serial.printf("[dict] lookup word=%s found=%d\n", word.c_str(), definition.isEmpty() ? 0 : 1);
+}
+
+void App::updateDictionaryOverlay(uint32_t nowMs) {
+  if (!dictionaryOverlayVisible_ || nowMs < dictionaryOverlayUntilMs_) {
+    return;
+  }
+  dictionaryOverlayVisible_ = false;
+  if (state_ == AppState::Paused || state_ == AppState::Playing) {
+    renderActiveReader(nowMs);
+  }
+}
+
 bool App::handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs) {
   if (isActivelyReading() || !readerFooterVisible() || !isFooterMetricTap(x, y)) {
     return false;
@@ -2246,6 +2296,20 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
+  // A play-hold-length press that started in the star corner looks up the
+  // current word instead of resuming; checked first so it wins the hold.
+  if (pausedTouchIntent_ == TouchIntent::None && !previewBrowseMode && dictionary_.available() &&
+      isStarSentenceTap(pausedTouch_.startX, pausedTouch_.startY) &&
+      !isPreviousSentenceTap(pausedTouch_.startX, pausedTouch_.startY) &&
+      touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended,
+                                         gestureConfig_)) {
+    resetReaderTapTracking();
+    pausedTouchIntent_ = TouchIntent::Dictionary;
+    wpmFeedbackVisible_ = false;
+    showDictionaryOverlay(nowMs);
+    return;
+  }
+
   if (pausedTouchIntent_ == TouchIntent::None &&
       touchgesture::shouldEngagePlayHold(pressDurationMs, tapLike, previewBrowseMode, ended,
                                          gestureConfig_)) {
@@ -2293,6 +2357,15 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
       saveReadingPosition(true);
+    }
+    return;
+  }
+
+  if (pausedTouchIntent_ == TouchIntent::Dictionary) {
+    // Overlay is up; swallow the rest of this press.
+    if (ended) {
+      pausedTouch_.active = false;
+      pausedTouchIntent_ = TouchIntent::None;
     }
     return;
   }
