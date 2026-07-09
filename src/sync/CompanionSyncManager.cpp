@@ -11,6 +11,7 @@
 #include "settings/PreferenceKeys.h"
 #include "settings/PreferenceSpec.h"
 #include "stats/StatsHistory.h"
+#include "text/BookText.h"
 #include "text/JsonText.h"
 
 #ifndef RSVP_FIRMWARE_VERSION
@@ -256,29 +257,6 @@ String ipToString(IPAddress ip) {
   return String(ip[0]) + "." + String(ip[1]) + "." + String(ip[2]) + "." + String(ip[3]);
 }
 
-String stripBom(String value) {
-  if (value.length() >= 3 && static_cast<uint8_t>(value[0]) == 0xEF &&
-      static_cast<uint8_t>(value[1]) == 0xBB && static_cast<uint8_t>(value[2]) == 0xBF) {
-    value.remove(0, 3);
-  }
-  return value;
-}
-
-bool directiveMatches(const String &loweredLine, const char *directive) {
-  if (!loweredLine.startsWith(directive)) {
-    return false;
-  }
-  const size_t directiveLength = strlen(directive);
-  return loweredLine.length() == directiveLength ||
-         isspace(static_cast<unsigned char>(loweredLine[directiveLength]));
-}
-
-String directiveValue(const String &line, const char *directive) {
-  String value = line.substring(strlen(directive));
-  value.trim();
-  return value;
-}
-
 bool isSupportedBookName(const String &loweredName) {
   return loweredName.endsWith(".rsvp") || loweredName.endsWith(".txt") ||
          loweredName.endsWith(".epub");
@@ -354,7 +332,9 @@ bool isHttpUrl(String value) {
 }
 
 String rsvpMetadataValueFromLine(const String &line, const char *directive, bool &pastDirectives) {
-  String trimmed = stripBom(line);
+  // Directive parsing is booktext::'s (the same parser StorageManager reads
+  // these files with); this wrapper only tracks when the header block ends.
+  String trimmed = booktext::stripBom(line);
   trimmed.trim();
   if (trimmed.isEmpty()) {
     return "";
@@ -362,8 +342,8 @@ String rsvpMetadataValueFromLine(const String &line, const char *directive, bool
 
   String lowered = trimmed;
   lowered.toLowerCase();
-  if (directiveMatches(lowered, directive)) {
-    return directiveValue(trimmed, directive);
+  if (booktext::prefixHasBoundary(lowered, directive)) {
+    return booktext::directiveValue(trimmed, directive);
   }
 
   if (!trimmed.startsWith("@")) {
